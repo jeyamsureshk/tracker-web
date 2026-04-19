@@ -1,0 +1,7 @@
+- [x] Change team filter from eq to ilike for partial match
+- [x] Add useEffect to reset currentPage to 1 when filters change
+- [x] Add clear filter button
+- [x] Change filter by operator to filter by model, search in item.model array
+- [ ] Create KPITrackingSheet.tsx component with KPI calculations and display
+- [ ] Add KPIs tab to App.tsx
+- [ ] Test KPI component for data loading and calculations
