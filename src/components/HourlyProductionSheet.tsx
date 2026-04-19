@@ -11,13 +11,6 @@ import ExcelJS from 'exceljs';
 import { saveAs } from 'file-saver';
 import { GoogleGenerativeAI } from "@google/generative-ai"; 
 
-// Material UI Imports
-import TextField from '@mui/material/TextField';
-import Autocomplete from '@mui/material/Autocomplete';
-import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider';
-import { AdapterDateFns } from '@mui/x-date-pickers/AdapterDateFns';
-import { TimePicker } from '@mui/x-date-pickers/TimePicker';
-
 // Initialize Gemini
 const genAI = new GoogleGenerativeAI("AIzaSyD38xBkfShURvHpbWsbg-YTlTdvXbND3p0");
 
@@ -27,6 +20,41 @@ const getLocalDateStr = () => {
   const offset = now.getTimezoneOffset();
   const localDate = new Date(now.getTime() - (offset * 60 * 1000));
   return localDate.toISOString().split('T')[0];
+};
+
+// Global Parsing Helpers
+const parseDowntime = (remarks) => {
+  if (!remarks) return { planned: 0, unplanned: 0 };
+  let planned = 0;
+  let unplanned = 0;
+  const plannedRegex = /(?:break|change\s*over|setup|meeting)\s*(\d+)/gi;
+  const unplannedRegex = /(?:delay|breakdown|power\s*cut|shortage)\s*(\d+)/gi;
+  let match;
+  while ((match = plannedRegex.exec(remarks)) !== null) {
+    planned += parseInt(match[1]);
+  }
+  while ((match = unplannedRegex.exec(remarks)) !== null) {
+    unplanned += parseInt(match[1]);
+  }
+  return { planned, unplanned };
+};
+
+const parseDefectsFromRemarks = (remarks) => {
+  if (!remarks) return 0;
+  let total = 0;
+  const defectRegex = /(?:fault|damage|drv|missing)\s*(\d+)(?:\s*no[''s]*|\s*nos)?/gi;
+  let match;
+  while ((match = defectRegex.exec(remarks)) !== null) {
+    total += parseInt(match[1]);
+  }
+  return total;
+};
+
+// Global exact Time Formatter (9 -> 09:00)
+const formatTimeExact = (hourNum) => {
+  const h = Math.floor(hourNum);
+  const m = Math.round((hourNum % 1) * 60);
+  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
 };
 
 interface HourlyProductionSheetProps {
@@ -69,88 +97,89 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
   const fileInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLDivElement>(null);
 
-// --- PDF Export Logic ---
-const handleExportToPDF = () => {
-  if (productions.length === 0) {
-    alert("No records to export!");
-    return;
-  }
+  // --- PDF Export Logic ---
+  const handleExportToPDF = () => {
+    if (productions.length === 0) {
+      alert("No records to export!");
+      return;
+    }
 
-  const doc = new jsPDF('p', 'mm', 'a4');
-  const logoBase64 = ""; 
+    const doc = new jsPDF('p', 'mm', 'a4');
+    const logoBase64 = ""; 
 
-  try {
-    doc.addImage(logoBase64, 'PNG', 165, 10, 30, 12);
-    const timestamp = `${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(16);
-    doc.text("Production Report", 14, 15);
-    
-    doc.setFontSize(7);
-    doc.setFont("helvetica", "normal");
-    doc.setTextColor(100);
+    try {
+      if(logoBase64) doc.addImage(logoBase64, 'PNG', 165, 10, 30, 12);
+      const timestamp = `${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(16);
+      doc.text("Production Report", 14, 15);
+      
+      doc.setFontSize(7);
+      doc.setFont("helvetica", "normal");
+      doc.setTextColor(100);
 
-    doc.text(`Generated on: ${timestamp}`, 14, 22);
-    const tableColumn = ["Date", "Time", "Team", "MP", "Models & Qty", "Target", "Produced", "Remarks"];
-    
-    const tableRows = productions.map(p => {
-      const dateObj = new Date(p.date);
-      const formattedDate = dateObj.toLocaleDateString('en-GB', {
-        day: '2-digit', month: 'short', year: 'numeric'
-      }).replace(/ /g, '-'); 
+      doc.text(`Generated on: ${timestamp}`, 14, 22);
+      const tableColumn = ["Date", "Time", "Team", "MP", "Models & Qty", "Target", "Produced", "Remarks"];
+      
+      const tableRows = productions.map(p => {
+        const dateObj = new Date(p.date);
+        const formattedDate = dateObj.toLocaleDateString('en-GB', {
+          day: '2-digit', month: 'short', year: 'numeric'
+        }).replace(/ /g, '-'); 
 
-      const h = Math.floor(p.hour);
-      const m = Math.round((p.hour % 1) * 60);
-      const timeString = `${h % 12 || 12}:${m.toString().padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`;
-      const modelsString = p.item ? p.item.map(i => `${i.model} - (${i.quantity})`).join('\n') : '';
+        const timeString = formatTimeExact(p.hour);
+        
+        // This is kept as \n for the PDF generator, since jsPDF handles \n perfectly
+        const modelsString = p.item ? p.item.map(i => `${i.model} - (${i.quantity})`).join('\n') : '';
 
-      return [
-        formattedDate, timeString, p.team, p.manpower,
-        modelsString, p.target_units, p.units_produced, p.remarks || ''
-      ];
-    });
+        return [
+          formattedDate, timeString, p.team, p.manpower,
+          modelsString, p.target_units, p.units_produced, p.remarks || ''
+        ];
+      });
 
-autoTable(doc, {
-  head: [tableColumn],
-  body: tableRows,
-  startY: 30,
-  styles: { 
-    font: "helvetica", 
-    fontSize: 7, 
-    cellPadding: 1.5, 
-    overflow: 'linebreak',
-    lineWidth: 0.1,
-    lineColor: [200, 200, 200],
-    halign: 'center',
-    valign: 'middle'
-  },
-  headStyles: { 
-    fillColor: [30, 64, 175], 
-    textColor: 255,
-    halign: 'center',
-    valign: 'middle' 
-  },
-  alternateRowStyles: { fillColor: [245, 247, 250] },
-  margin: { left: 10, right: 10 },
-  columnStyles: {
-    0: { cellWidth: 20 }, 
-    1: { cellWidth: 17 }, 
-    2: { cellWidth: 23 },
-    3: { cellWidth: 10 }, 
-    4: { cellWidth: 45, halign: 'left' },
-    5: { cellWidth: 12 }, 
-    6: { cellWidth: 15 }, 
-    7: { cellWidth: 'auto', halign: 'left' },
-  }
-});
-    const dateStr = new Date().toISOString().split('T')[0];
-    doc.save(`Production_Report_${dateStr}.pdf`);
-    
-  } catch (error) {
-    console.error("PDF Export Error:", error);
-    alert("Failed to generate PDF. Check console for details.");
-  }
-};
+      autoTable(doc, {
+        head: [tableColumn],
+        body: tableRows,
+        startY: 30,
+        styles: { 
+          font: "helvetica", 
+          fontSize: 7, 
+          cellPadding: 1.5, 
+          overflow: 'linebreak',
+          lineWidth: 0.1,
+          lineColor: [200, 200, 200],
+          halign: 'center',
+          valign: 'middle'
+        },
+        headStyles: { 
+          fillColor: [30, 64, 175], 
+          textColor: 255,
+          halign: 'center',
+          valign: 'middle' 
+        },
+        alternateRowStyles: { fillColor: [245, 247, 250] },
+        margin: { left: 10, right: 10 },
+        columnStyles: {
+          0: { cellWidth: 20 }, 
+          1: { cellWidth: 15 }, 
+          2: { cellWidth: 23 },
+          3: { cellWidth: 10 }, 
+          4: { cellWidth: 40, halign: 'left' },
+          5: { cellWidth: 12 }, 
+          6: { cellWidth: 15 }, 
+          7: { cellWidth: 'auto', halign: 'left' },
+        }
+      });
+      const dateStr = new Date().toISOString().split('T')[0];
+      doc.save(`Production_Report_${dateStr}.pdf`);
+      
+    } catch (error) {
+      console.error("PDF Export Error:", error);
+      alert("Failed to generate PDF. Check console for details.");
+    }
+  };
+
   const initialFormState: Partial<ProductionRecord> = {
     date: getLocalDateStr(),
     hour: 0,
@@ -167,7 +196,6 @@ autoTable(doc, {
   const [formData, setFormData] = useState<Partial<ProductionRecord>>(initialFormState);
 
   // --- Data Fetching ---
-
   useEffect(() => {
     fetchProductions();
     fetchOperators();
@@ -250,7 +278,6 @@ autoTable(doc, {
   }, [teamFilter, modelFilter, fromDate, toDate, hourMin, hourMax, efficiencyMin, efficiencyMax]);
 
   // --- Helpers ---
-
   const calculateUnitsProduced = (items: { model: string; quantity: number | string }[]) => {
     return items.reduce((sum, item) => sum + (parseFloat(String(item.quantity)) || 0), 0);
   };
@@ -272,26 +299,18 @@ autoTable(doc, {
     setEfficiencyMax('');
     setCurrentPage(1);
   };
-const hasActiveFilters = 
-  fromDate !== "" || 
-  toDate !== "" || 
-  hourMin !== "" || 
-  hourMax !== "" || 
-  efficiencyMin !== "" || 
-  efficiencyMax !== "" || 
-  teamFilter !== "" || 
-  modelFilter !== ""; 
   
-  const filterOptions = (options: ItemOption[], { inputValue }: { inputValue: string }) => {
-    const words = inputValue.toLowerCase().split(' ').filter(word => word.length > 0);
-    return options.filter((option) => {
-      const combinedStr = `${option.part_id} ${option.description}`.toLowerCase();
-      return words.every(word => combinedStr.includes(word));
-    });
-  };
-
+  const hasActiveFilters = 
+    fromDate !== "" || 
+    toDate !== "" || 
+    hourMin !== "" || 
+    hourMax !== "" || 
+    efficiencyMin !== "" || 
+    efficiencyMax !== "" || 
+    teamFilter !== "" || 
+    modelFilter !== ""; 
+  
   // --- AI Logic ---
-
   const fileToGenerativePart = async (file: File) => {
     const base64EncodedDataPromise = new Promise((resolve) => {
       const reader = new FileReader();
@@ -399,7 +418,6 @@ const hasActiveFilters =
   };
 
   // --- Form Actions ---
-
   const resetForm = () => {
     setFormData(initialFormState);
     setEditingId(null);
@@ -476,270 +494,143 @@ const hasActiveFilters =
     fetchProductions();
   };
 
-// --- Excel Export Function ---
-const handleExportToExcel = async () => {
-  if (productions.length === 0) {
-    alert("No records to export!");
-    return;
-  }
-
-  const sortedData = [...productions].sort((a, b) => {
-    const dateA = new Date(a.date);
-    const dateB = new Date(b.date);
-    if (dateA - dateB !== 0) return dateA - dateB;
-    return a.hour - b.hour;
-  });
-
-  const workbook = new ExcelJS.Workbook();
-  const dateStr = new Date().toISOString().split('T')[0];
-  
-  const blueTheme = '1E40AF';
-  const lightBlueBg = 'F1F5F9'; 
-  const borderColor = 'CBD5E1';
-
-  const parseDowntime = (remarks) => {
-    if (!remarks) return { planned: 0, unplanned: 0 };
-    let planned = 0;
-    let unplanned = 0;
-    const plannedRegex = /(?:break|change\s*over|setup|meeting)\s*(\d+)/gi;
-    const unplannedRegex = /(?:delay|breakdown|power\s*cut|shortage)\s*(\d+)/gi;
-    let match;
-    while ((match = plannedRegex.exec(remarks)) !== null) {
-      planned += parseInt(match[1]);
+  // --- Excel Export Function ---
+  const handleExportToExcel = async () => {
+    if (productions.length === 0) {
+      alert("No records to export!");
+      return;
     }
-    while ((match = unplannedRegex.exec(remarks)) !== null) {
-      unplanned += parseInt(match[1]);
-    }
-    return { planned, unplanned };
-  };
 
-  const parseDefectsFromRemarks = (remarks) => {
-    if (!remarks) return 0;
-    let total = 0;
-    const defectRegex = /(?:fault|damage|drv|missing)\s*(\d+)(?:\s*no[''s]*|\s*nos)?/gi;
-    let match;
-    while ((match = defectRegex.exec(remarks)) !== null) {
-      total += parseInt(match[1]);
-    }
-    return total;
-  };
+    const sortedData = [...productions].sort((a, b) => {
+      const dateA = new Date(a.date);
+      const dateB = new Date(b.date);
+      if (dateA - dateB !== 0) return dateA - dateB;
+      return a.hour - b.hour;
+    });
 
-  const populateMergedSheet = (sheet, data, isMainSheet = true) => {
-    const colMap = isMainSheet 
-      ? { qty: 'F', target: 'G', eff: 'K' } 
-      : { qty: 'E', target: 'F', eff: 'J' };
-
-    const baseColumns = [
-      { header: 'Date', key: 'date', width: 15 },
-      { header: 'Time', key: 'time', width: 10 },
-    ];
+    const workbook = new ExcelJS.Workbook();
+    const dateStr = new Date().toISOString().split('T')[0];
     
-    if (isMainSheet) baseColumns.push({ header: 'Team', key: 'team', width: 18 });
-    
-    baseColumns.push(
-      { header: 'MP', key: 'mp', width: 8 },
-      { header: 'Model Name', key: 'modelName', width: 35 },
-      { header: 'Model Qty', key: 'modelQty', width: 15 },
-      { header: 'Target', key: 'target', width: 12 },
-      { header: 'Planned DT (Min)', key: 'pdt', width: 15 },
-      { header: 'Unplanned DT (Min)', key: 'udt', width: 18 },
-      { header: 'Defect Qty', key: 'defect', width: 12 },
-      { header: 'Efficiency (%)', key: 'eff', width: 15 },
-      { header: 'Remarks', key: 'remarks', width: 50 }
-    );
-    
-    sheet.columns = baseColumns;
+    const blueTheme = '1E40AF';
+    const lightBlueBg = 'F1F5F9'; 
+    const borderColor = 'CBD5E1';
 
-    data.forEach((p, index) => {
-      const dateObj = new Date(p.date);
-      const formattedDate = dateObj.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).replace(/ /g, '-');
-      const timeString = `${Math.floor(p.hour).toString().padStart(2, '0')}:${Math.round((p.hour % 1) * 60).toString().padStart(2, '0')}`;
+    const populateMergedSheet = (sheet, data, isMainSheet = true) => {
+      // Date, Time, Team, MP, Model Name, Produced, Target, Planned DT, Unplanned DT, Defect Qty, Remarks
+      const baseColumns = [
+        { header: 'Date', key: 'date', width: 15 },
+        { header: 'Time', key: 'time', width: 15 },
+      ];
+      
+      if (isMainSheet) baseColumns.push({ header: 'Team', key: 'team', width: 18 });
+      
+      baseColumns.push(
+        { header: 'MP', key: 'mp', width: 8 },
+        { header: 'Model Name', key: 'modelName', width: 35 },
+        { header: 'Produced', key: 'modelQty', width: 15 },
+        { header: 'Target', key: 'target', width: 12 },
+        { header: 'Planned DT', key: 'pdt', width: 15 },
+        { header: 'Unplanned DT', key: 'udt', width: 18 },
+        { header: 'Defect Qty', key: 'defect', width: 12 },
+        { header: 'Remarks', key: 'remarks', width: 50 }
+      );
+      
+      sheet.columns = baseColumns;
 
-      const startRow = sheet.rowCount + 1;
-      const items = p.item && p.item.length > 0 ? p.item : [{ model: '-', quantity: 0 }];
-      const combinedModels = items.map(i => i.model).join(', ');
-      const qtyArray = items.map(i => Number(i.quantity) || 0);
-      const sumQtys = qtyArray.reduce((acc, curr) => acc + curr, 0);
+      data.forEach((p, index) => {
+        const dateObj = new Date(p.date);
+        const formattedDate = dateObj.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).replace(/ /g, '-');
+        
+        const timeString = formatTimeExact(p.hour);
 
-      const dt = parseDowntime(p.remarks);
-      const defectFromRemarks = parseDefectsFromRemarks(p.remarks);
-      const finalDefectQty = (Number(p.defect_qty) || 0) + defectFromRemarks;
+        const items = p.item && p.item.length > 0 ? p.item : [{ model: '-', quantity: 0 }];
+        const combinedModels = items.map(i => i.model).join('\n');
+        const qtyArray = items.map(i => Number(i.quantity) || 0);
+        const sumQtys = qtyArray.reduce((acc, curr) => acc + curr, 0);
 
-      const row = sheet.addRow({
-        date: formattedDate,
-        time: timeString,
-        team: p.team,
-        mp: p.manpower,
-        modelName: combinedModels,
-        modelQty: qtyArray.length > 1 ? { formula: qtyArray.join('+'), result: sumQtys } : sumQtys,
-        target: p.target_units,
-        pdt: dt.planned === 0 ? null : dt.planned,
-        udt: dt.unplanned === 0 ? null : dt.unplanned,
-        defect: finalDefectQty === 0 ? null : finalDefectQty,
-        eff: 0, 
-        remarks: p.remarks || '-'
-      });
+        const dt = parseDowntime(p.remarks);
+        const defectFromRemarks = parseDefectsFromRemarks(p.remarks);
+        const finalDefectQty = (Number(p.defect_qty) || 0) + defectFromRemarks;
 
-      const effCell = sheet.getCell(`${colMap.eff}${startRow}`);
-      effCell.value = {
-        formula: `IFERROR(${colMap.qty}${startRow}/${colMap.target}${startRow}, 0)`,
-        result: (p.target_units > 0 ? (sumQtys / p.target_units) : 0)
-      };
-
-      if (index % 2 !== 0) {
-        row.eachCell({ includeEmpty: true }, (cell) => {
-          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: lightBlueBg } };
+        const row = sheet.addRow({
+          date: formattedDate,
+          time: timeString,
+          team: p.team,
+          mp: p.manpower,
+          modelName: combinedModels,
+          modelQty: qtyArray.length > 1 ? { formula: qtyArray.join('+'), result: sumQtys } : sumQtys,
+          target: p.target_units,
+          pdt: dt.planned === 0 ? null : dt.planned,
+          udt: dt.unplanned === 0 ? null : dt.unplanned,
+          defect: finalDefectQty === 0 ? null : finalDefectQty,
+          remarks: p.remarks || '-'
         });
-      }
-    });
 
-    sheet.eachRow((row, rowNumber) => {
-      row.height = rowNumber === 1 ? 30 : row.height;
-      row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-        cell.border = {
-          top: { style: 'thin', color: { argb: borderColor } },
-          left: { style: 'thin', color: { argb: borderColor } },
-          bottom: { style: 'thin', color: { argb: borderColor } },
-          right: { style: 'thin', color: { argb: borderColor } }
-        };
-
-        let isLeftAlign = isMainSheet ? [3, 5, 12].includes(colNumber) : [4, 11].includes(colNumber);
-        cell.alignment = { 
-          vertical: 'middle', 
-          horizontal: isLeftAlign ? 'left' : 'center', 
-          wrapText: true,
-          indent: isLeftAlign ? 1 : 0 
-        };
-        
-        if (rowNumber === 1) {
-          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: blueTheme } };
-          cell.font = { name: 'Arial', size: 11, bold: true, color: { argb: 'FFFFFF' } };
+        if (index % 2 !== 0) {
+          row.eachCell({ includeEmpty: true }, (cell) => {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: lightBlueBg } };
+          });
         }
-
-        const pdtCol = isMainSheet ? 8 : 7;
-        const udtCol = isMainSheet ? 9 : 8;
-        if (rowNumber > 1 && [pdtCol, udtCol].includes(colNumber)) {
-            cell.numFmt = '0;-0;;@'; 
-        }
-
-        const effColIndex = isMainSheet ? 11 : 10;
-        if (rowNumber > 1 && colNumber === effColIndex) cell.numFmt = '0%';
       });
-    });
 
-    const lastRow = sheet.rowCount;
-    sheet.views = [{ 
-      state: 'frozen', 
-      ySplit: 1, 
-      showGridLines: false, 
-      activeCell: `A${lastRow}`, 
-      topRow: lastRow 
-    }];
-  };
+      sheet.eachRow((row, rowNumber) => {
+        row.height = rowNumber === 1 ? 30 : row.height;
+        row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+          cell.border = {
+            top: { style: 'thin', color: { argb: borderColor } },
+            left: { style: 'thin', color: { argb: borderColor } },
+            bottom: { style: 'thin', color: { argb: borderColor } },
+            right: { style: 'thin', color: { argb: borderColor } }
+          };
 
-  const worksheet = workbook.addWorksheet('Production Records');
-  populateMergedSheet(worksheet, sortedData, true);
+          let isLeftAlign = isMainSheet ? [5, 11].includes(colNumber) : [4, 10].includes(colNumber);
+          cell.alignment = { 
+            vertical: 'middle', 
+            horizontal: isLeftAlign ? 'left' : 'center', 
+            wrapText: true,
+            indent: isLeftAlign ? 1 : 0 
+          };
+          
+          if (rowNumber === 1) {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: blueTheme } };
+            cell.font = { name: 'Arial', size: 11, bold: true, color: { argb: 'FFFFFF' } };
+          }
 
-  const uniqueTeams = [...new Set(sortedData.map(p => p.team))];
-  uniqueTeams.forEach(teamName => {
-    const teamSheet = workbook.addWorksheet(teamName.substring(0, 31));
-    populateMergedSheet(teamSheet, sortedData.filter(p => p.team === teamName), false);
-  });
-
-  const analyticsSheet = workbook.addWorksheet('Team Analytics');
-  const lastRowMain = worksheet.rowCount;
-  const teams = [...new Set(sortedData.map(p => p.team))];
-  const years = [...new Set(sortedData.map(p => new Date(p.date).getFullYear()))];
-  const months = [...new Set(sortedData.map(p => {
-    const d = new Date(p.date);
-    return d.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' }).replace(/ /g, '-');
-  }))];
-
-  let currentExcelRow = 1;
-  const createLiveTable = (title, periods, type) => {
-    analyticsSheet.mergeCells(`A${currentExcelRow}:E${currentExcelRow}`);
-    const tCell = analyticsSheet.getCell(`A${currentExcelRow}`);
-    tCell.value = title;
-    tCell.font = { bold: true, size: 12, color: { argb: blueTheme } };
-    currentExcelRow++;
-
-    const headers = ['Team', 'Period', 'Total Target', 'Total Produced', 'Live Eff %'];
-    const hRow = analyticsSheet.getRow(currentExcelRow);
-    hRow.values = headers;
-    hRow.eachCell(c => {
-      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: blueTheme } };
-      c.font = { bold: true, color: { argb: 'FFFFFF' } };
-      c.alignment = { horizontal: 'center' };
-    });
-    currentExcelRow++;
-
-    teams.forEach(team => {
-      periods.forEach(period => {
-        const row = analyticsSheet.getRow(currentExcelRow);
-        const dateRange = `'Production Records'!$A$2:$A$${lastRowMain}`;
-        const teamRange = `'Production Records'!$C$2:$C$${lastRowMain}`;
-        const prodRange = `'Production Records'!$F$2:$F$${lastRowMain}`; 
-        const targetRange = `'Production Records'!$G$2:$G$${lastRowMain}`;
-        
-        let targetFormula = { formula: `SUMIFS(${targetRange}, ${teamRange}, "${team}", ${dateRange}, "${type === 'DAY' ? period : "*" + period}")` };
-        let prodFormula = { formula: `SUMIFS(${prodRange}, ${teamRange}, "${team}", ${dateRange}, "${type === 'DAY' ? period : "*" + period}")` };
-        
-        row.values = [team, period, targetFormula, prodFormula, { formula: `IFERROR(D${currentExcelRow}/C${currentExcelRow}, 0)` }];
-        
-        row.getCell(3).numFmt = '0;-0;;@';
-        row.getCell(4).numFmt = '0;-0;;@';
-        row.getCell(5).numFmt = '0.00%';
-        
-        row.eachCell(c => {
-          c.border = { top: {style:'thin', color: {argb: borderColor}}, left: {style:'thin', color: {argb: borderColor}}, bottom: {style:'thin', color: {argb: borderColor}}, right: {style:'thin', color: {argb: borderColor}} };
-          c.alignment = { horizontal: 'center', vertical: 'middle' };
+          const pdtCol = isMainSheet ? 8 : 7;
+          const udtCol = isMainSheet ? 9 : 8;
+          if (rowNumber > 1 && [pdtCol, udtCol].includes(colNumber)) {
+              cell.numFmt = '0;-0;;@'; 
+          }
         });
-        currentExcelRow++;
       });
+
+      const lastRow = sheet.rowCount;
+      sheet.views = [{ 
+        state: 'frozen', 
+        ySplit: 1, 
+        showGridLines: false, 
+        activeCell: `A${lastRow}`, 
+        topRow: lastRow 
+      }];
+    };
+
+    const worksheet = workbook.addWorksheet('Production Records');
+    populateMergedSheet(worksheet, sortedData, true);
+
+    const uniqueTeams = [...new Set(sortedData.map(p => p.team))];
+    uniqueTeams.forEach(teamName => {
+      const teamSheet = workbook.addWorksheet(teamName.substring(0, 31));
+      populateMergedSheet(teamSheet, sortedData.filter(p => p.team === teamName), false);
     });
-    currentExcelRow += 2; 
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = window.URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `Production_Report_${dateStr}.xlsx`;
+    anchor.click();
   };
-
-  analyticsSheet.columns = [{ width: 15 }, { width: 15 }, { width: 15 }, { width: 15 }, { width: 15 }];
-  createLiveTable('📈 YEAR-WISE PERFORMANCE', years, 'YEAR');
-  createLiveTable('📊 MONTH-WISE PERFORMANCE', months, 'MONTH');
-  const days = [...new Set(sortedData.map(p => {
-    const d = new Date(p.date);
-    return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).replace(/ /g, '-');
-  }))];
-  createLiveTable('📅 DAY-WISE PERFORMANCE', days, 'DAY');
-
-  analyticsSheet.views = [{ showGridLines: false, activeCell: `A${analyticsSheet.rowCount}`, topRow: analyticsSheet.rowCount }];
-
-  const modelSheet = workbook.addWorksheet('Model Summary');
-  const teamModelTotals = {};
-  sortedData.forEach(p => {
-    if (p.item) p.item.forEach(i => {
-      const key = `${p.team}_${i.model}`;
-      if (!teamModelTotals[key]) teamModelTotals[key] = { team: p.team, model: i.model, totalQty: 0 };
-      teamModelTotals[key].totalQty += Number(i.quantity) || 0;
-    });
-  });
-  const modelSummaryData = Object.values(teamModelTotals).sort((a,b) => a.team.localeCompare(b.team));
-  
-  modelSheet.addRow(['📦 TEAM-WISE MODEL TOTALS']).font = {bold: true, size: 14};
-  const mHeader = modelSheet.addRow(['Team Name', 'Model Name', 'Total Produced']);
-  mHeader.eachCell(c => { c.fill = {type:'pattern', pattern:'solid', fgColor:{argb:blueTheme}}; c.font = {color:{argb:'FFFFFF'}}; });
-
-  modelSummaryData.forEach(item => {
-    const r = modelSheet.addRow([item.team, item.model, item.totalQty]);
-    r.getCell(3).numFmt = '0;-0;;@';
-  });
-  modelSheet.views = [{ activeCell: `A${modelSheet.rowCount}`, topRow: modelSheet.rowCount }];
-
-  const buffer = await workbook.xlsx.writeBuffer();
-  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-  const url = window.URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = `Production_Report_${dateStr}.xlsx`;
-  anchor.click();
-};
 
   const getTeamBackgroundColor = (team: string) => {
     const colors = { 'a': 'bg-blue-50/30', 'b': 'bg-red-50/30', 'c': 'bg-yellow-50/30', 'd': 'bg-purple-50/30', 'e': 'bg-pink-50/30' };
@@ -771,7 +662,7 @@ const handleExportToExcel = async () => {
   return (
     <div className="space-y-4 p-4 md:p-6 bg-slate-50 min-h-screen">
       
-      {/* 2. Filters & Records Table Container */}
+      {/* Filters & Records Table Container */}
       <div className="bg-white rounded-xl shadow-xl border border-slate-200 transition-all duration-300 relative">
         
         {/* COMPACT Header Section */}
@@ -898,110 +789,124 @@ const handleExportToExcel = async () => {
           </div>
         </div>
 
-        {/* COMPACT Records Table */}
+        {/* COMPACT Records Table - Copy-Paste Optimized */}
         <div className="overflow-x-auto">
-          <table className="w-full bg-white-100 text-left">
+          <table className="w-full bg-white-100 text-left border-collapse" style={{ borderCollapse: 'collapse' }}>
             <thead className="bg-gray-200">
               <tr>
-                <th className="px-2 py-2 text-center text-xs font-bold text-gray-600 border border-gray-300 tracking-tight">Date</th>
-                <th className="px-2 py-2 text-center text-xs font-bold text-gray-600 border border-gray-300 tracking-tight">Time</th>
-                <th className="px-2 py-2 text-center text-xs font-bold text-gray-600 w-[3rem] border border-gray-300 tracking-tight">MP</th>
-                <th className="px-2 py-2 text-center text-xs font-bold text-gray-600 w-[14rem] border border-gray-300 tracking-tight">Models</th>
-                <th className="px-2 py-2 text-center text-xs font-bold text-gray-600 border border-gray-300 tracking-tight">Produced</th>
-                <th className="px-2 py-2 text-center text-xs font-bold text-gray-600 border border-gray-300 tracking-tight">Target</th>
-                <th className="px-2 py-2 text-center text-xs font-bold text-gray-600 border border-gray-300 tracking-tight">Team</th>
-                <th className="px-2 py-2 text-center text-xs font-bold text-gray-600 w-[15rem] border border-gray-300 tracking-tight">Remarks</th>
-                <th className="px-2 py-2 text-center text-xs font-bold text-gray-600 w-[4rem] border border-gray-300 tracking-tight">Actions</th>
+                <th className="px-2 py-2 text-center text-xs font-bold text-gray-600 border border-gray-300">Date</th>
+                <th className="px-2 py-2 text-center text-xs font-bold text-gray-600 border border-gray-300 w-[5rem]">Time</th>
+                <th className="px-2 py-2 text-center text-xs font-bold text-gray-600 border border-gray-300">Team</th>
+                <th className="px-2 py-2 text-center text-xs font-bold text-gray-600 border border-gray-300 w-[3rem]">MP</th>
+                <th className="px-2 py-2 text-center text-xs font-bold text-gray-600 border border-gray-300 w-[14rem]">Model Name</th>
+                <th className="px-2 py-2 text-center text-xs font-bold text-gray-600 border border-gray-300">Produced</th>
+                <th className="px-2 py-2 text-center text-xs font-bold text-gray-600 border border-gray-300">Target</th>
+                <th className="px-2 py-2 text-center text-xs font-bold text-gray-600 border border-gray-300">Planned DT</th>
+                <th className="px-2 py-2 text-center text-xs font-bold text-gray-600 border border-gray-300">Unplanned DT</th>
+                <th className="px-2 py-2 text-center text-xs font-bold text-gray-600 border border-gray-300">Defect Qty</th>
+                <th className="px-2 py-2 text-center text-xs font-bold text-gray-600 border border-gray-300 w-[15rem]">Remarks</th>
+                <th className="px-2 py-2 text-center text-xs font-bold text-gray-600 w-[4rem] border border-gray-300 select-none">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y bg-white">
-              {currentProductions.map((production) => (
-                <tr key={production.id} className={`group hover:bg-indigo-50 border border-gray-300 transition-colors ${getTeamBackgroundColor(production.team)}`}>
-                  
-                  <td className="px-2 py-1.5 whitespace-nowrap border border-slate-300 text-center">
-                    <span className="text-[11px] font-medium text-slate-700">
-                        {new Date(production.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', })}
-                    </span>
-                  </td>
+              {currentProductions.map((production) => {
+                
+                const timeString = formatTimeExact(production.hour);
 
-                  <td className="px-2 py-1.5 whitespace-nowrap border border-slate-300 text-center">
-                    <span className="text-[11px] font-medium text-slate-700">
-                        {(() => {
-                        const h = Math.floor(production.hour);
-                        const m = Math.round((production.hour % 1) * 60);
-                        return `${(h % 12 || 12).toString().padStart(2, '0')}:${m.toString().padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`;
-                        })()}
-                    </span>
-                  </td>
+                // Replaced \n with HTML <br /> mapping to force Excel to paste inside the same cell
+                const modelsContent = production.item && production.item.length > 0 
+                  ? production.item.map((m, idx, arr) => (
+                      <span key={idx}>
+                        {m.model}
+                        {idx < arr.length - 1 && <br />}
+                      </span>
+                    ))
+                  : '-';
+
+                // Replaced \n with HTML <br /> mapping to force Excel to paste inside the same cell
+                const remarksContent = production.remarks
+                  ? production.remarks.split(/\r?\n/).map((line, idx, arr) => (
+                      <span key={idx}>
+                        {line}
+                        {idx < arr.length - 1 && <br />}
+                      </span>
+                    ))
+                  : '-';
+
+                // Parse downtimes and defects for UI display
+                const dt = parseDowntime(production.remarks);
+                const defectFromRemarks = parseDefectsFromRemarks(production.remarks);
+                const finalDefectQty = (Number(production.defect_qty) || 0) + defectFromRemarks;
+
+                return (
+                  <tr key={production.id} className={`group hover:bg-indigo-50 border border-gray-300 transition-colors ${getTeamBackgroundColor(production.team)}`}>
                     
-                  <td className="px-2 py-1.5 text-center align-middle text-[11px] border border-slate-300 font-mono font-bold text-slate-700">
+                    <td className="px-2 py-1.5 whitespace-nowrap border border-slate-300 text-center text-[11px] font-medium text-slate-700">
+                      {new Date(production.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
+                    </td>
+
+                    <td className="px-2 py-1.5 whitespace-nowrap border border-slate-300 text-center text-[11px] font-medium text-slate-700">
+                      {timeString}
+                    </td>
+
+                    <td 
+                      className="px-2 py-1.5 text-center border border-slate-300 text-[11px] font-bold uppercase tracking-wider"
+                      style={{ color: teamColors[production.team] || '#475569' }}
+                    >
+                      {production.team}
+                    </td>
+                      
+                    <td className="px-2 py-1.5 text-center align-middle text-[11px] border border-slate-300 font-mono font-bold text-slate-700">
                       {production.manpower}
-                  </td>
+                    </td>
 
-                  <td className="px-2 py-1.5 align-middle border border-slate-300"> 
-                      <div className="flex flex-col items-center justify-center space-y-1">
-                          {production.item?.map((m, idx) => (
-                            <div 
-                              key={idx} 
-                              className="flex items-center justify-between bg-yellow-50 px-2 py-0.5 rounded w-full max-w-[240px] shadow-sm border border-yellow-100/50"
-                            >
-                                <span className="text-[10px] font-bold text-slate-600 whitespace-normal leading-tight mr-2 break-words">{m.model}</span>
-                                <span className="text-[11px] font-mono font-black text-blue-600 shrink-0">{m.quantity}</span>
-                            </div>
-                          ))}
+                    <td 
+                      className="px-2 py-1.5 align-middle border border-slate-300 text-[11px] font-mono font-bold text-slate-700"
+                      style={{ whiteSpace: 'pre-wrap' }}
+                    > 
+                      {modelsContent}
+                    </td>
+
+                    <td className="px-2 py-1.5 text-center text-[12px] border border-slate-300 font-mono font-bold text-slate-700">
+                      {production.units_produced}
+                    </td>
+                    
+                    <td className="px-2 py-1.5 text-center text-[12px] border border-slate-300 font-mono font-bold text-slate-700">
+                      {production.target_units}
+                    </td>
+
+                    <td className="px-2 py-1.5 text-center text-[12px] border border-slate-300 font-mono text-slate-700">
+                      {dt.planned === 0 ? '' : dt.planned}
+                    </td>
+
+                    <td className="px-2 py-1.5 text-center text-[12px] border border-slate-300 font-mono text-slate-700">
+                      {dt.unplanned === 0 ? '' : dt.unplanned}
+                    </td>
+
+                    <td className="px-2 py-1.5 text-center text-[12px] border border-slate-300 font-mono text-slate-700">
+                      {finalDefectQty === 0 ? '' : finalDefectQty}
+                    </td>
+
+                    <td 
+                      className={`px-2 py-1.5 border border-slate-300 text-[11px] font-medium min-w-[10rem] ${
+                        /fault|issue|problem|delay|drv|shortage/i.test(production.remarks || '') 
+                          ? 'bg-red-50 text-red-700 font-bold' 
+                          : 'text-slate-700'
+                      }`}
+                      style={{ whiteSpace: 'pre-wrap' }}
+                    >
+                      {remarksContent}
+                    </td>
+                    
+                    <td className="px-2 py-1.5 text-right border border-slate-300 align-middle select-none">
+                      <div className="flex justify-center gap-1 opacity-20 group-hover:opacity-100 transition-all">
+                        <button onClick={() => handleEdit(production)} className="p-1 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded"><Edit2 size={14} /></button>
+                        <button onClick={() => handleDelete(production.id!)} className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded"><Trash2 size={14} /></button>
                       </div>
-                  </td>
-
-                  <td className="px-2 py-1.5 text-center text-[12px] border border-slate-300 font-mono font-bold text-slate-700">{production.units_produced}</td>
-                  <td className="px-2 py-1.5 text-center text-[12px] border border-slate-300 font-mono font-bold text-slate-700">{production.target_units}</td>
-
-                  <td className="px-2 py-1.5 text-center border border-slate-300">
-                    <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider shadow-sm" style={{ backgroundColor: `${teamColors[production.team]}10` || '#f1f5f9', color: `${teamColors[production.team]}B3` || '#f1f5f9', }}>
-                        {production.team}
-                    </span>
-                  </td>
-
-                  <td className={`px-2 py-1.5 border border-slate-300 text-[10px] font-medium whitespace-normal leading-tight break-words max-w-[250px] ${
-                    /fault|issue|problem|delay|drv|shortage/i.test(production.remarks || '') 
-                      ? 'bg-red-50/50' 
-                      : 'text-slate-700'
-                  }`}>
-                    <div className="text-[10px] whitespace-pre-line">
-                      {production.remarks ? (
-                        production.remarks.split(/\r?\n/).map((line, idx) => {
-                          const properLine = line
-                            .split(' ')
-                            .map(word => {
-                              if (word.length > 1 && word === word.toUpperCase() && /[A-Z]/.test(word)) {
-                                return word; 
-                              }
-                              return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
-                            })
-                            .join(' ');
-
-                          return (
-                            <div 
-                              key={idx} 
-                              className={/fault|issue|problem|delay|drv|shortage/i.test(line) ? 'text-red-600 font-bold' : ''}
-                            >
-                              {properLine}
-                            </div>
-                          );
-                        })
-                      ) : (
-                        <span className="text-slate-400">-</span>
-                      )}
-                    </div>
-                  </td>
-                  
-                  <td className="px-2 py-1.5 text-right border border-slate-300 align-middle">
-                    <div className="flex justify-center gap-1 opacity-20 group-hover:opacity-100 transition-all">
-                      <button onClick={() => handleEdit(production)} className="p-1 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded"><Edit2 size={14} /></button>
-                      <button onClick={() => handleDelete(production.id!)} className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded"><Trash2 size={14} /></button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

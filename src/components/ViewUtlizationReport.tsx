@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Calendar, Activity, FileSpreadsheet, Search, RefreshCw, Edit2, Trash2, Save, X, Download } from 'lucide-react';
+import { Calendar, Activity, FileSpreadsheet, Search, RefreshCw, Edit2, Trash2, Save, X, Download, Copy } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import ExcelJS from 'exceljs';
 
@@ -9,6 +9,7 @@ interface ProductionRow {
   team: string; 
   timeDuration: string;
   modelName: string;
+  items: any[]; // Array for raw item data
   plannedMp: number;
   actualMp: number;
   totalAvailTime: number;
@@ -77,7 +78,7 @@ export default function ViewUtilizationReport() {
 
   const [editingRowId, setEditingRowId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState({ 
-    actualMp: 0, plannedDt: 0, unplannedDt: 0, targetOutput: 0, actualOutput: 0, remarks: '' 
+    actualMp: 0, plannedDt: 0, unplannedDt: 0, targetOutput: 0, actualOutput: 0, remarks: '', items: [] as any[]
   });
 
   const fetchReportData = async () => {
@@ -105,6 +106,7 @@ export default function ViewUtilizationReport() {
         team: record.team,
         timeDuration: decimalToTimeLabel(record.hour),
         modelName: (record.item || []).map((i: any) => i.model).join('\n'), 
+        items: record.item || [], // Store raw items to access quantity safely for UI
         plannedMp: TEAM_PLANNED_MP[record.team] || record.manpower || 0,
         actualMp: record.manpower || 0,
         totalAvailTime: is9AMSlot ? 30 : 60,
@@ -132,7 +134,8 @@ export default function ViewUtilizationReport() {
       setEditingRowId(row.id);
       setEditForm({
         actualMp: row.actualMp, plannedDt: row.plannedDt, unplannedDt: row.unplannedDt,
-        targetOutput: row.targetOutput, actualOutput: row.actualOutput, remarks: row.remarks
+        targetOutput: row.targetOutput, actualOutput: row.actualOutput, remarks: row.remarks,
+        items: row.items ? JSON.parse(JSON.stringify(row.items)) : [] // Deep copy array for editing
       });
     } else if (pwd !== null) alert("Incorrect password!");
   };
@@ -153,9 +156,13 @@ export default function ViewUtilizationReport() {
       const { error } = await supabase
         .from('production_records')
         .update({
-          manpower: editForm.actualMp, target_units: editForm.targetOutput,
-          units_produced: editForm.actualOutput, plan_dt: editForm.plannedDt,
-          unplan_dt: editForm.unplannedDt, remarks: editForm.remarks 
+          manpower: editForm.actualMp, 
+          target_units: editForm.targetOutput,
+          units_produced: editForm.actualOutput, 
+          plan_dt: editForm.plannedDt,
+          unplan_dt: editForm.unplannedDt, 
+          remarks: editForm.remarks,
+          item: editForm.items // Save the updated model/quantity array
         }).eq('id', editingRowId);
 
       if (error) throw error;
@@ -202,6 +209,80 @@ export default function ViewUtilizationReport() {
   const pctUtilTotalAll = totals.totalAvail ? (totals.runTime / totals.totalAvail) * 100 : 0;
   const pctEffTotal = totals.target ? (totals.actual / totals.target) * 100 : 0;
   const pctQualTotal = totals.actual ? (totals.good / totals.actual) * 100 : 0;
+
+  // --- SINGLE COLUMN COPY LOGIC ---
+  const handleCopyColumn = (colIndex: number, colName: string) => {
+    if (displayedRows.length === 0) return;
+
+    const columnData = displayedRows.map((row, index) => {
+      const isEditing = editingRowId === row.id;
+      const currentPlannedDt = isEditing ? editForm.plannedDt : row.plannedDt;
+      const currentUnplannedDt = isEditing ? editForm.unplannedDt : row.unplannedDt;
+      const currentActualOutput = isEditing ? editForm.actualOutput : row.actualOutput;
+      const currentTargetOutput = isEditing ? editForm.targetOutput : row.targetOutput;
+      const originalDefects = row.actualOutput - row.goodOutput; 
+      const currentGoodOutput = isEditing ? Math.max(0, currentActualOutput - originalDefects) : row.goodOutput;
+
+      const actualAvailTime = row.totalAvailTime - currentPlannedDt;
+      const actualRunTime = actualAvailTime - currentUnplannedDt;
+      
+      const pctUtilActual = actualAvailTime > 0 ? (actualRunTime / actualAvailTime) * 100 : 0;
+      const pctUtilTotal = row.totalAvailTime > 0 ? (actualRunTime / row.totalAvailTime) * 100 : 0;
+      const pctEff = currentTargetOutput > 0 ? (currentActualOutput / currentTargetOutput) * 100 : 0;
+      const pctQual = currentActualOutput > 0 ? (currentGoodOutput / currentActualOutput) * 100 : 0;
+
+      // Wrap multi-line values in quotes so Excel parses them perfectly into a single cell
+      const formatForExcel = (val: string) => {
+         const str = String(val);
+         if (str.includes('\n')) return `"${str.replace(/"/g, '""')}"`;
+         return str;
+      };
+
+      switch(colIndex) {
+        case 0: return index + 1;
+        case 1: return row.timeDuration;
+        case 2: return formatForExcel(row.modelName || '-'); // Skips quantities, takes pure names
+        case 3: return row.plannedMp;
+        case 4: return isEditing ? editForm.actualMp : row.actualMp;
+        case 5: return row.totalAvailTime;
+        case 6: return currentPlannedDt;
+        case 7: return actualAvailTime;
+        case 8: return currentUnplannedDt;
+        case 9: return actualRunTime;
+        case 10: return `${pctUtilActual.toFixed(1)}%`;
+        case 11: return `${pctUtilTotal.toFixed(1)}%`;
+        case 12: return currentTargetOutput;
+        case 13: return currentActualOutput;
+        case 14: return `${pctEff.toFixed(1)}%`;
+        case 15: return currentGoodOutput;
+        case 16: return `${pctQual.toFixed(1)}%`;
+        case 17: return formatForExcel(isEditing ? editForm.remarks : (row.remarks || '-'));
+        default: return '';
+      }
+    });
+
+    const textToCopy = columnData.join('\n');
+    navigator.clipboard.writeText(textToCopy).then(() => {
+      if (Notification.permission === "granted") {
+        new Notification("📋 Copied!", {
+          body: `${colName} column copied to clipboard successfully!`,
+          icon: "/vite.svg" 
+        });
+      } else {
+        alert(`${colName} column copied to clipboard successfully!`);
+      }
+    }).catch(err => {
+      console.error('Failed to copy column data: ', err);
+      if (Notification.permission === "granted") {
+        new Notification("⚠️ Copy Failed", {
+          body: "Failed to copy column. Please check browser permissions.",
+          icon: "/vite.svg"
+        });
+      } else {
+        alert('Failed to copy column. Please check browser permissions.');
+      }
+    });
+  };
 
   // --- REAL-TIME EXCEL EXPORT WITH EXCELJS (MULTI-SHEET) ---
   const handleExportToExcel = async () => {
@@ -347,9 +428,25 @@ export default function ViewUtilizationReport() {
     window.URL.revokeObjectURL(url);
   };
 
-  const cellClass = "border border-slate-300 px-2 py-2 h-10 text-slate-700 leading-tight";
-  const numCellClass = `${cellClass} text-center font-mono`;
+  const cellClass = "border border-slate-300 px-2 py-2 h-10 text-slate-700 text-center";
+  const numCellClass = `${cellClass} font-mono`;
   const preWrapCellClass = `${cellClass} whitespace-pre-wrap`;
+
+  // Render Table Header Helper Function (Generates the centered headers with Copy buttons)
+  const renderTh = (index: number, title: string, widthClass: string, colorClass = '', alignClass = 'text-center', justifyClass = 'justify-center') => (
+    <th key={index} className={`border-[0.5px] border-slate-400 px-2 py-3 ${widthClass} text-[10px] whitespace-normal leading-tight font-bold ${alignClass} ${colorClass} group relative hover:bg-[#254abf] transition-colors`}>
+      <div className={`flex items-center ${justifyClass} gap-1.5`}>
+        <span>{title}</span>
+        <button 
+          onClick={() => handleCopyColumn(index, title.split('\n')[0])} 
+          className="p-1 hover:bg-blue-400 bg-blue-600/80 rounded opacity-0 group-hover:opacity-100 transition-opacity text-white shrink-0 shadow-sm" 
+          title={`Copy ${title.split('\n')[0]} column`}
+        >
+          <Copy size={12} />
+        </button>
+      </div>
+    </th>
+  );
 
   return (
     <div className="max-w-[100vw] mx-auto p-4 md:p-6 bg-slate-50 min-h-screen font-sans">
@@ -377,13 +474,6 @@ export default function ViewUtilizationReport() {
                 className="bg-transparent text-sm text-white outline-none cursor-pointer [color-scheme:dark]"
               />
             </div>
-
-           {/* <button 
-              onClick={fetchReportData}
-              className="flex items-center justify-center bg-white text-blue-700 px-4 py-2 rounded-lg text-sm font-bold shadow-md hover:bg-blue-50 transition-colors"
-            >
-              <Search size={16} className="mr-2" /> Load Data
-            </button> */}
 
             {/* EXPORT EXCEL BUTTON */}
             <button 
@@ -431,28 +521,28 @@ export default function ViewUtilizationReport() {
             </div>
           ) : null}
 
-          <table className="w-full text-xs border-collapse whitespace-nowrap min-w-[1600px] bg-white">
+          <table className="w-full text-xs border-collapse whitespace-nowrap min-w-[1600px] bg-white" style={{ borderCollapse: 'collapse' }}>
             <thead className="bg-[#1E40AF] text-white sticky top-0 z-20 shadow-md">
               <tr>
-                <th className="border-[0.5px] border-slate-400 px-2 py-3 w-10 text-center text-[10px] whitespace-normal leading-tight font-bold">SL.No</th>
-                <th className="border-[0.5px] border-slate-400 px-2 py-3 w-48 text-[10px] whitespace-normal leading-tight font-bold text-center">Time Duration</th>
-                <th className="border-[0.5px] border-slate-400 px-2 py-3 min-w-[160px] text-[10px] whitespace-normal leading-tight font-bold text-left">Model Name</th>
-                <th className="border-[0.5px] border-slate-400 px-2 py-3 w-16 text-[10px] whitespace-normal leading-tight font-bold text-center">Planned Manpower</th>
-                <th className="border-[0.5px] border-slate-400 px-2 py-3 w-16 text-[10px] whitespace-normal leading-tight font-bold text-center">Actual Manpower</th>
-                <th className="border-[0.5px] border-slate-400 px-2 py-3 w-20 text-[10px] whitespace-normal leading-tight font-bold text-center">Total Available Time (min)</th>
-                <th className="border-[0.5px] border-slate-400 px-2 py-3 w-28 text-[10px] whitespace-normal leading-tight font-bold text-center text-amber-200">Planned Downtime (min)</th>
-                <th className="border-[0.5px] border-slate-400 px-2 py-3 w-20 text-[10px] whitespace-normal leading-tight font-bold text-center">Actual Available Time (min)</th>
-                <th className="border-[0.5px] border-slate-400 px-2 py-3 w-24 text-[10px] whitespace-normal leading-tight font-bold text-center text-amber-200">Un-Planned Downtime (min)</th>
-                <th className="border-[0.5px] border-slate-400 px-2 py-3 w-32 text-[10px] whitespace-normal leading-tight font-bold text-center">Actual Run Time (min)</th>
-                <th className="border-[0.5px] border-slate-400 px-2 py-3 w-32 text-[10px] whitespace-normal leading-tight font-bold text-center text-emerald-200">Line Utilization (Actual) %</th>
-                <th className="border-[0.5px] border-slate-400 px-2 py-3 w-32 text-[10px] whitespace-normal leading-tight font-bold text-center text-emerald-200">Line Utilization (Total) %</th>
-                <th className="border-[0.5px] border-slate-400 px-2 py-3 w-20 text-[10px] whitespace-normal leading-tight font-bold text-center">Target Output (Qty)</th>
-                <th className="border-[0.5px] border-slate-400 px-2 py-3 w-20 text-[10px] whitespace-normal leading-tight font-bold text-center">Actual Output (Qty)</th>
-                <th className="border-[0.5px] border-slate-400 px-2 py-3 w-32 text-[10px] whitespace-normal leading-tight font-bold text-center text-blue-200">Efficiency(%)</th>
-                <th className="border-[0.5px] border-slate-400 px-2 py-3 w-20 text-[10px] whitespace-normal leading-tight font-bold text-center">Good Output(Qty)</th>
-                <th className="border-[0.5px] border-slate-400 px-2 py-3 w-32 text-[10px] whitespace-normal leading-tight font-bold text-center text-blue-200">Quality (FPY) %</th>
-                <th className="border-[0.5px] border-slate-400 px-2 py-3 min-w-[250px] text-[10px] whitespace-normal leading-tight font-bold text-left">Remarks</th>
-                <th className="border-[0.5px] border-slate-400 px-2 py-3 w-10"></th>
+                {renderTh(0, 'SL.No', 'w-10')}
+                {renderTh(1, 'Time Duration', 'w-48')}
+                {renderTh(2, 'Model Name', 'min-w-[160px]', '', 'text-left', 'justify-start')}
+                {renderTh(3, 'Planned Manpower', 'w-16')}
+                {renderTh(4, 'Actual Manpower', 'w-16')}
+                {renderTh(5, 'Total Available Time (min)', 'w-20')}
+                {renderTh(6, 'Planned Downtime (min)', 'w-28', 'text-amber-200')}
+                {renderTh(7, 'Actual Available Time (min)', 'w-20')}
+                {renderTh(8, 'Un-Planned Downtime (min)', 'w-24', 'text-amber-200')}
+                {renderTh(9, 'Actual Run Time (min)', 'w-32')}
+                {renderTh(10, 'Line Utilization (Actual) %', 'w-32', 'text-emerald-200')}
+                {renderTh(11, 'Line Utilization (Total) %', 'w-32', 'text-emerald-200')}
+                {renderTh(12, 'Target Output (Qty)', 'w-20')}
+                {renderTh(13, 'Actual Output (Qty)', 'w-20')}
+                {renderTh(14, 'Efficiency(%)', 'w-32', 'text-blue-200')}
+                {renderTh(15, 'Good Output(Qty)', 'w-20')}
+                {renderTh(16, 'Quality (FPY) %', 'w-32', 'text-blue-200')}
+                {renderTh(17, 'Remarks', 'min-w-[250px]', '', 'text-left', 'justify-start')}
+                <th className="border-[0.5px] border-slate-400 px-2 py-3 w-10 select-none"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-300">
@@ -475,13 +565,74 @@ export default function ViewUtilizationReport() {
                 const pctEff = currentTargetOutput > 0 ? (currentActualOutput / currentTargetOutput) * 100 : 0;
                 const pctQual = currentActualOutput > 0 ? (currentGoodOutput / currentActualOutput) * 100 : 0;
 
+                // Safely render Models + Uncopyable Quantities
+                const modelsContent = row.items && row.items.length > 0
+                  ? row.items.map((m, idx, arr) => (
+                      <span key={idx}>
+                        {m.model}
+                        <span className="select-none opacity-60"> ({m.quantity})</span>
+                        {idx < arr.length - 1 && <br />}
+                      </span>
+                    ))
+                  : '-';
+
+                const remarksContent = row.remarks
+                  ? row.remarks.split(/\r?\n/).map((line, idx, arr) => (
+                      <span key={idx}>
+                        {line}
+                        {idx < arr.length - 1 && <br />}
+                      </span>
+                    ))
+                  : '-';
+
                 return (
                   <tr key={row.id} className={`hover:bg-blue-50/50 transition-colors ${index % 2 === 0 ? 'bg-white' : 'bg-slate-50'}`}>
                     <td className={`${numCellClass} text-slate-500 font-bold`}>{index + 1}</td>
                     <td className={`${numCellClass} font-semibold`}>{row.timeDuration}</td>
-                    <td className={`${preWrapCellClass} font-medium`}>
-                      {row.modelName || '-'}
+                    
+                    <td className={`${preWrapCellClass} font-medium`} style={{ whiteSpace: 'pre-wrap' }}>
+                      {isEditing ? (
+                        <div className="flex flex-col gap-1 items-center">
+                          {editForm.items.map((item, idx) => (
+                            <div key={idx} className="flex gap-1 items-center justify-center">
+                              <input 
+                                type="text" 
+                                className="w-24 border border-blue-400 rounded text-center outline-none text-[10px] py-0.5" 
+                                value={item.model} 
+                                onChange={(e) => {
+                                  const newItems = [...editForm.items];
+                                  newItems[idx].model = e.target.value;
+                                  setEditForm({...editForm, items: newItems});
+                                }} 
+                                placeholder="Model"
+                              />
+                              <input 
+                                type="number" 
+                                className="w-12 border border-blue-400 rounded text-center outline-none text-[10px] py-0.5" 
+                                value={item.quantity} 
+                                onChange={(e) => {
+                                  const newItems = [...editForm.items];
+                                  newItems[idx].quantity = Number(e.target.value) || 0;
+                                  
+                                  // Auto-calculate total actual output based on items
+                                  const newTotalOutput = newItems.reduce((sum, curr) => sum + (Number(curr.quantity) || 0), 0);
+                                  
+                                  setEditForm({
+                                    ...editForm, 
+                                    items: newItems,
+                                    actualOutput: newTotalOutput
+                                  });
+                                }} 
+                                placeholder="Qty"
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        modelsContent
+                      )}
                     </td>
+                    
                     <td className={numCellClass}>{row.plannedMp}</td>
                     
                     <td className={numCellClass}>
@@ -529,13 +680,13 @@ export default function ViewUtilizationReport() {
                     
                     <td className={numCellClass} style={getPercentageStyle(pctQual, false)}>{pctQual.toFixed(1)}%</td>
                     
-                    <td className={`${preWrapCellClass} text-[11px]`}>
+                    <td className={`${preWrapCellClass} text-[11px]`} style={{ whiteSpace: 'pre-wrap' }}>
                       {isEditing ? (
-                        <textarea className="w-full min-h-[40px] border border-blue-400 rounded p-1 outline-none resize-none" value={editForm.remarks} onChange={(e) => setEditForm({...editForm, remarks: e.target.value})} />
-                      ) : row.remarks || '-'}
+                        <textarea className="w-full min-h-[40px] border border-blue-400 rounded p-1 outline-none resize-none text-center" value={editForm.remarks} onChange={(e) => setEditForm({...editForm, remarks: e.target.value})} />
+                      ) : remarksContent}
                     </td>
 
-                    <td className={`${cellClass} text-center`}>
+                    <td className={`${cellClass} text-center select-none`}>
                       {isEditing ? (
                         <div className="flex justify-center gap-2">
                           <button onClick={handleSaveEdit} className="p-1 text-green-600 hover:bg-green-100 rounded transition-colors" title="Save"><Save size={16} /></button>
@@ -572,7 +723,7 @@ export default function ViewUtilizationReport() {
                   <td className="border border-slate-700 px-2 py-3 text-center text-white">{totals.good}</td>
                   <td className="border border-slate-700 px-2 py-3 text-center" style={getPercentageStyle(pctQualTotal, true)}>{pctQualTotal.toFixed(1)}%</td>
                   <td className="border border-slate-700 px-2 py-3 text-white"></td>
-                  <td className="border border-slate-700 px-2 py-3 text-white"></td>
+                  <td className="border border-slate-700 px-2 py-3 text-white select-none"></td>
                 </tr>
               )}
             </tbody>
