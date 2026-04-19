@@ -3,7 +3,7 @@ import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { 
   Plus, Trash2, Edit2, Check, X, Search, Clock, Users, Target, Activity, Layout, 
-  Download, Camera, BellRing, FileText, FileSpreadsheet 
+  Download, Camera, BellRing, FileText, FileSpreadsheet, Copy 
 } from 'lucide-react';
 import { supabase, ProductionRecord, Operator } from '../lib/supabase';
 import * as XLSX from 'xlsx'; 
@@ -42,7 +42,7 @@ const parseDowntime = (remarks) => {
 const parseDefectsFromRemarks = (remarks) => {
   if (!remarks) return 0;
   let total = 0;
-  const defectRegex = /(?:fault|damage|drv|missing)\s*(\d+)(?:\s*no[''s]*|\s*nos)?/gi;
+  const defectRegex = /(?:fault|damage|drv|missing)\s*(\d+)(?:\s*no['s]*|\s*nos)?/gi;
   let match;
   while ((match = defectRegex.exec(remarks)) !== null) {
     total += parseInt(match[1]);
@@ -50,11 +50,24 @@ const parseDefectsFromRemarks = (remarks) => {
   return total;
 };
 
-// Global exact Time Formatter (9 -> 09:00)
-const formatTimeExact = (hourNum) => {
-  const h = Math.floor(hourNum);
-  const m = Math.round((hourNum % 1) * 60);
-  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+// Global Time Formatter (9 -> 08:30 - 09:00, 10 -> 09:00 - 10:00)
+const formatTimeRange = (hourNum) => {
+  const endH = Math.floor(hourNum);
+  const endM = Math.round((hourNum % 1) * 60);
+  
+  let startH = endH - 1;
+  let startM = endM;
+  
+  // Special case: If end time is 09:00, start time becomes 08:30
+  if (endH === 9 && endM === 0) {
+    startH = 8;
+    startM = 30;
+  }
+
+  const startStr = `${startH.toString().padStart(2, '0')}:${startM.toString().padStart(2, '0')}`;
+  const endStr = `${endH.toString().padStart(2, '0')}:${endM.toString().padStart(2, '0')}`;
+  
+  return `${startStr} - ${endStr}`;
 };
 
 interface HourlyProductionSheetProps {
@@ -119,7 +132,7 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
       doc.setTextColor(100);
 
       doc.text(`Generated on: ${timestamp}`, 14, 22);
-      const tableColumn = ["Date", "Time", "Team", "MP", "Models & Qty", "Target", "Produced", "Remarks"];
+      const tableColumn = ["Date", "Time", "Team", "MP", "Models", "Target", "Produced", "Remarks"];
       
       const tableRows = productions.map(p => {
         const dateObj = new Date(p.date);
@@ -127,10 +140,10 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
           day: '2-digit', month: 'short', year: 'numeric'
         }).replace(/ /g, '-'); 
 
-        const timeString = formatTimeExact(p.hour);
+        const timeString = formatTimeRange(p.hour);
         
-        // This is kept as \n for the PDF generator, since jsPDF handles \n perfectly
-        const modelsString = p.item ? p.item.map(i => `${i.model} - (${i.quantity})`).join('\n') : '';
+        // Leaves quantity out of the PDF format
+        const modelsString = p.item ? p.item.map(i => `${i.model}`).join('\n') : '';
 
         return [
           formattedDate, timeString, p.team, p.manpower,
@@ -280,12 +293,6 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
   // --- Helpers ---
   const calculateUnitsProduced = (items: { model: string; quantity: number | string }[]) => {
     return items.reduce((sum, item) => sum + (parseFloat(String(item.quantity)) || 0), 0);
-  };
-
-  const calculateEfficiency = (produced: number, target: number, dbEfficiency?: number) => {
-    if (dbEfficiency !== undefined) return dbEfficiency.toFixed(1);
-    if (target === 0) return '0.0';
-    return ((produced / target) * 100).toFixed(1);
   };
 
   const clearFilters = () => {
@@ -494,6 +501,86 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
     fetchProductions();
   };
 
+  // --- COPY FULL TABLE LOGIC ---
+  const handleCopyFullTable = () => {
+    if (productions.length === 0) {
+      alert("No records to copy!");
+      return;
+    }
+
+    const sortedData = [...productions].sort((a, b) => {
+      const dateA = new Date(a.date);
+      const dateB = new Date(b.date);
+      if (dateA.getTime() !== dateB.getTime()) return dateA.getTime() - dateB.getTime();
+      return a.hour - b.hour;
+    });
+
+    const headers = [
+      "Date", "Time", "Team", "MP", "Model Name", "Produced", "Target", 
+      "Planned DT", "Unplanned DT", "Defect Qty", "Remarks"
+    ];
+
+    // Wraps multiline content in double quotes to prevent breaking rows in Excel
+    const formatForExcel = (val: string | number | null | undefined) => {
+      const str = String(val || '');
+      if (str.includes('\n') || str.includes('\t') || str.includes('"')) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    };
+
+    const rowsData = sortedData.map(p => {
+      const dateObj = new Date(p.date);
+      const formattedDate = dateObj.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+      const timeString = formatTimeRange(p.hour);
+      
+      const items = p.item && p.item.length > 0 ? p.item : [];
+      // Omit quantity from the copy clipboard text
+      const modelsString = items.map(i => `${i.model}`).join('\n') || '-';
+
+      const dt = parseDowntime(p.remarks);
+      const defectFromRemarks = parseDefectsFromRemarks(p.remarks);
+      const finalDefectQty = (Number(p.defect_qty) || 0) + defectFromRemarks;
+
+      return [
+        formattedDate,
+        timeString,
+        p.team,
+        p.manpower,
+        formatForExcel(modelsString),
+        p.units_produced,
+        p.target_units,
+        dt.planned === 0 ? '' : dt.planned,
+        dt.unplanned === 0 ? '' : dt.unplanned,
+        finalDefectQty === 0 ? '' : finalDefectQty,
+        formatForExcel(p.remarks || '-')
+      ].join('\t');
+    });
+
+    const tsvContent = [headers.join('\t'), ...rowsData].join('\n');
+
+    navigator.clipboard.writeText(tsvContent).then(() => {
+      if (Notification.permission === "granted") {
+        new Notification("📋 Copied!", {
+          body: "Full table copied to clipboard successfully! You can paste it into Excel.",
+          icon: "/vite.svg"
+        });
+      } else {
+        alert("Full table copied to clipboard successfully! You can paste it into Excel.");
+      }
+    }).catch(err => {
+      console.error('Failed to copy table data: ', err);
+      if (Notification.permission === "granted") {
+        new Notification("⚠️ Copy Failed", {
+          body: "Failed to copy table. Please check browser permissions.",
+          icon: "/vite.svg"
+        });
+      } else {
+        alert('Failed to copy table. Please check browser permissions.');
+      }
+    });
+  };
+
   // --- Excel Export Function ---
   const handleExportToExcel = async () => {
     if (productions.length === 0) {
@@ -516,7 +603,6 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
     const borderColor = 'CBD5E1';
 
     const populateMergedSheet = (sheet, data, isMainSheet = true) => {
-      // Date, Time, Team, MP, Model Name, Produced, Target, Planned DT, Unplanned DT, Defect Qty, Remarks
       const baseColumns = [
         { header: 'Date', key: 'date', width: 15 },
         { header: 'Time', key: 'time', width: 15 },
@@ -541,7 +627,7 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
         const dateObj = new Date(p.date);
         const formattedDate = dateObj.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).replace(/ /g, '-');
         
-        const timeString = formatTimeExact(p.hour);
+        const timeString = formatTimeRange(p.hour);
 
         const items = p.item && p.item.length > 0 ? p.item : [{ model: '-', quantity: 0 }];
         const combinedModels = items.map(i => i.model).join('\n');
@@ -690,6 +776,12 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
             >
               <FileSpreadsheet size={14} /> Export Excel
             </button>
+            <button
+              onClick={handleCopyFullTable}
+              className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-indigo-600 border border-indigo-600 rounded-lg hover:bg-indigo-700 shadow-sm transition-all"
+            >
+              <Copy size={14} /> Copy Table
+            </button>
 
             <button
               onClick={clearFilters}
@@ -811,19 +903,19 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
             <tbody className="divide-y bg-white">
               {currentProductions.map((production) => {
                 
-                const timeString = formatTimeExact(production.hour);
+                const timeString = formatTimeRange(production.hour);
 
-                // Replaced \n with HTML <br /> mapping to force Excel to paste inside the same cell
+                // Models Render Logic: Shows the quantity in UI, but make it select-none so it skips manual highlighting
                 const modelsContent = production.item && production.item.length > 0 
                   ? production.item.map((m, idx, arr) => (
                       <span key={idx}>
                         {m.model}
+                        <span className="select-none opacity-60"> ({m.quantity})</span>
                         {idx < arr.length - 1 && <br />}
                       </span>
                     ))
                   : '-';
 
-                // Replaced \n with HTML <br /> mapping to force Excel to paste inside the same cell
                 const remarksContent = production.remarks
                   ? production.remarks.split(/\r?\n/).map((line, idx, arr) => (
                       <span key={idx}>
