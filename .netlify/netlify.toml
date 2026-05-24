@@ -7,7 +7,7 @@ headers = []
 [functions."*"]
 
 [build]
-publish = "/home/sureshk/Documents/Dashboard web with ID and remarks /dist"
+publish = "/home/sureshk/Desktop/Website/Dashboard v1.0.0/dist"
 publishOrigin = "config"
 commandOrigin = "config"
 command = "npm run build"

@@ -11,8 +11,15 @@ import ExcelJS from 'exceljs';
 import { saveAs } from 'file-saver';
 import { GoogleGenerativeAI } from "@google/generative-ai"; 
 
+// Material UI Imports
+import TextField from '@mui/material/TextField';
+import Autocomplete from '@mui/material/Autocomplete';
+import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider';
+import { AdapterDateFns } from '@mui/x-date-pickers/AdapterDateFns';
+import { TimePicker } from '@mui/x-date-pickers/TimePicker';
+
 // Initialize Gemini
-const genAI = new GoogleGenerativeAI("AIzaSyD38xBkfShURvHpbWsbg-YTlTdvXbND3p0");
+const genAI = new GoogleGenerativeAI("AIzaSyA-k1vvlPPCpc_Ma_9SNZRV69iTRD9gIhE");
 
 // Helper to get local date string (YYYY-MM-DD)
 const getLocalDateStr = () => {
@@ -22,36 +29,8 @@ const getLocalDateStr = () => {
   return localDate.toISOString().split('T')[0];
 };
 
-// Global Parsing Helpers
-const parseDowntime = (remarks) => {
-  if (!remarks) return { planned: 0, unplanned: 0 };
-  let planned = 0;
-  let unplanned = 0;
-  const plannedRegex = /(?:break|change\s*over|setup|meeting)\s*(\d+)/gi;
-  const unplannedRegex = /(?:delay|breakdown|power\s*cut|shortage)\s*(\d+)/gi;
-  let match;
-  while ((match = plannedRegex.exec(remarks)) !== null) {
-    planned += parseInt(match[1]);
-  }
-  while ((match = unplannedRegex.exec(remarks)) !== null) {
-    unplanned += parseInt(match[1]);
-  }
-  return { planned, unplanned };
-};
-
-const parseDefectsFromRemarks = (remarks) => {
-  if (!remarks) return 0;
-  let total = 0;
-  const defectRegex = /(?:fault|damage|drv|missing)\s*(\d+)(?:\s*no['s]*|\s*nos)?/gi;
-  let match;
-  while ((match = defectRegex.exec(remarks)) !== null) {
-    total += parseInt(match[1]);
-  }
-  return total;
-};
-
 // Global Time Formatter (9 -> 08:30 - 09:00, 10 -> 09:00 - 10:00)
-const formatTimeRange = (hourNum) => {
+const formatTimeRange = (hourNum: number) => {
   const endH = Math.floor(hourNum);
   const endM = Math.round((hourNum % 1) * 60);
   
@@ -86,6 +65,7 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
   const [modelOptions, setModelOptions] = useState<ItemOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [isVisible, setIsVisible] = useState(false); // Form visibility state
 
   // Filters & Pagination
   const [teamFilter, setTeamFilter] = useState('');
@@ -143,7 +123,7 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
         const timeString = formatTimeRange(p.hour);
         
         // Leaves quantity out of the PDF format
-        const modelsString = p.item ? p.item.map(i => `${i.model}`).join('\n') : '';
+        const modelsString = p.item ? p.item.map((i: any) => `${i.model}`).join('\n') : '';
 
         return [
           formattedDate, timeString, p.team, p.manpower,
@@ -317,6 +297,14 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
     teamFilter !== "" || 
     modelFilter !== ""; 
   
+  const filterOptions = (options: ItemOption[], { inputValue }: { inputValue: string }) => {
+    const words = inputValue.toLowerCase().split(' ').filter(word => word.length > 0);
+    return options.filter((option) => {
+      const combinedStr = `${option.part_id} ${option.description}`.toLowerCase();
+      return words.every(word => combinedStr.includes(word));
+    });
+  };
+
   // --- AI Logic ---
   const fileToGenerativePart = async (file: File) => {
     const base64EncodedDataPromise = new Promise((resolve) => {
@@ -448,6 +436,7 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
       } else {
         resetForm();
         fetchProductions();
+        setIsVisible(false); // Close form on save
       }
     } else {
       const { data: existingRecords } = await supabase
@@ -468,6 +457,7 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
       } else {
         resetForm();
         fetchProductions();
+        setIsVisible(false); // Close form on save
       }
     }
   };
@@ -487,10 +477,13 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
       remarks: production.remarks || '',
       item: production.item && production.item.length > 0 ? production.item : [{ model: '', quantity: 0 }],
     });
-    formRef.current?.scrollIntoView({ 
-      behavior: 'smooth', 
-      block: 'start' 
-    });
+    setIsVisible(true);
+    setTimeout(() => {
+      formRef.current?.scrollIntoView({ 
+        behavior: 'smooth', 
+        block: 'start' 
+      });
+    }, 100);
   };
 
   const handleDelete = async (id: string) => {
@@ -536,11 +529,7 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
       
       const items = p.item && p.item.length > 0 ? p.item : [];
       // Omit quantity from the copy clipboard text
-      const modelsString = items.map(i => `${i.model}`).join('\n') || '-';
-
-      const dt = parseDowntime(p.remarks);
-      const defectFromRemarks = parseDefectsFromRemarks(p.remarks);
-      const finalDefectQty = (Number(p.defect_qty) || 0) + defectFromRemarks;
+      const modelsString = items.map((i: any) => `${i.model}`).join('\n') || '-';
 
       return [
         formattedDate,
@@ -550,9 +539,9 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
         formatForExcel(modelsString),
         p.units_produced,
         p.target_units,
-        dt.planned === 0 ? '' : dt.planned,
-        dt.unplanned === 0 ? '' : dt.unplanned,
-        finalDefectQty === 0 ? '' : finalDefectQty,
+        p.plan_dt || '',
+        p.unplan_dt || '',
+        p.defect_qty || '',
         formatForExcel(p.remarks || '-')
       ].join('\t');
     });
@@ -591,7 +580,7 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
     const sortedData = [...productions].sort((a, b) => {
       const dateA = new Date(a.date);
       const dateB = new Date(b.date);
-      if (dateA - dateB !== 0) return dateA - dateB;
+      if (dateA - dateB !== 0) return dateA.getTime() - dateB.getTime();
       return a.hour - b.hour;
     });
 
@@ -602,7 +591,7 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
     const lightBlueBg = 'F1F5F9'; 
     const borderColor = 'CBD5E1';
 
-    const populateMergedSheet = (sheet, data, isMainSheet = true) => {
+    const populateMergedSheet = (sheet: any, data: any[], isMainSheet = true) => {
       const baseColumns = [
         { header: 'Date', key: 'date', width: 15 },
         { header: 'Time', key: 'time', width: 15 },
@@ -630,13 +619,9 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
         const timeString = formatTimeRange(p.hour);
 
         const items = p.item && p.item.length > 0 ? p.item : [{ model: '-', quantity: 0 }];
-        const combinedModels = items.map(i => i.model).join('\n');
-        const qtyArray = items.map(i => Number(i.quantity) || 0);
-        const sumQtys = qtyArray.reduce((acc, curr) => acc + curr, 0);
-
-        const dt = parseDowntime(p.remarks);
-        const defectFromRemarks = parseDefectsFromRemarks(p.remarks);
-        const finalDefectQty = (Number(p.defect_qty) || 0) + defectFromRemarks;
+        const combinedModels = items.map((i: any) => i.model).join('\n');
+        const qtyArray = items.map((i: any) => Number(i.quantity) || 0);
+        const sumQtys = qtyArray.reduce((acc: number, curr: number) => acc + curr, 0);
 
         const row = sheet.addRow({
           date: formattedDate,
@@ -646,22 +631,22 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
           modelName: combinedModels,
           modelQty: qtyArray.length > 1 ? { formula: qtyArray.join('+'), result: sumQtys } : sumQtys,
           target: p.target_units,
-          pdt: dt.planned === 0 ? null : dt.planned,
-          udt: dt.unplanned === 0 ? null : dt.unplanned,
-          defect: finalDefectQty === 0 ? null : finalDefectQty,
+          pdt: p.plan_dt || null,
+          udt: p.unplan_dt || null,
+          defect: p.defect_qty || null,
           remarks: p.remarks || '-'
         });
 
         if (index % 2 !== 0) {
-          row.eachCell({ includeEmpty: true }, (cell) => {
+          row.eachCell({ includeEmpty: true }, (cell: any) => {
             cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: lightBlueBg } };
           });
         }
       });
 
-      sheet.eachRow((row, rowNumber) => {
+      sheet.eachRow((row: any, rowNumber: number) => {
         row.height = rowNumber === 1 ? 30 : row.height;
-        row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+        row.eachCell({ includeEmpty: true }, (cell: any, colNumber: number) => {
           cell.border = {
             top: { style: 'thin', color: { argb: borderColor } },
             left: { style: 'thin', color: { argb: borderColor } },
@@ -746,12 +731,266 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
   );
 
   return (
-    <div className="space-y-4 p-4 md:p-6 bg-slate-50 min-h-screen">
-      
+    <div className="space-y-4 p-4 md:p-6 bg-slate-50 min-h-screen relative">
+
+      {/* Add Record Toggle Button */}
+      <div className="flex justify-end mb-4 relative z-10">
+        <button
+          onClick={() => setIsVisible(!isVisible)}
+          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-all shadow-md font-bold"
+        >
+          <Plus size={16} className={isVisible ? "rotate-45 transition-transform" : "transition-transform"} /> 
+          {isVisible ? 'Close Add Record' : 'Add Record'}
+        </button>
+      </div>
+
+      {isVisible && (
+        <div ref={formRef} className="bg-white rounded-xl shadow-lg border border-slate-200 overflow-hidden mb-6 transition-all duration-300 animate-in fade-in slide-in-from-top-4">
+          
+          {/* Header with AI Buttons */}
+          <div className="px-8 py-4 bg-slate-800 text-white flex items-center justify-between">
+             <div className="flex items-center gap-2">
+                {editingId ? <Edit2 size={20} /> : <Plus size={20} />}
+                <h3 className="text-lg font-bold">{editingId ? 'Edit Production Entry' : 'New Production Entry'}</h3>
+             </div>
+             
+             <div className="flex items-center gap-3">
+                 
+                 {/* --- REPORT BUTTON (UPDATED) --- */}
+                 <button 
+                     type="button"
+                     onClick={() => generateDailyReport(false)}
+                     disabled={generatingReport}
+                     className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded-lg text-sm font-medium transition-all shadow-md border border-emerald-400 disabled:opacity-50"
+                 >
+                     {generatingReport ? (
+                       <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                     ) : (
+                       <BellRing size={16} />
+                     )}
+                     {generatingReport ? "Analyzing..." : `Report: ${selectedDate}`}
+                 </button>
+
+                 {/* AI Scanner Input */}
+                 <input 
+                     type="file" 
+                     accept="image/*" 
+                     className="hidden" 
+                     ref={fileInputRef} 
+                     onChange={handleImageAnalysis} 
+                 />
+                 <button 
+                     type="button"
+                     onClick={() => fileInputRef.current?.click()}
+                     disabled={analyzing}
+                     className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg text-sm font-medium transition-all shadow-md border border-indigo-400"
+                 >
+                     {analyzing ? (
+                         <>
+                            <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                            Scanning...
+                         </>
+                     ) : (
+                         <>
+                            <Camera size={16} /> Auto-Fill
+                         </>
+                     )}
+                 </button>
+             </div>
+          </div>
+
+          <form onSubmit={handleSubmit} className="p-8 space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Production Date</label>
+                <input
+                  type="date"
+                  value={formData.date}
+                  onChange={(e) => setFormData({ ...formData, date: e.target.value })}
+                  className="w-full border-slate-200 rounded-lg px-4 py-2.5 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                  required
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Production Hour</label>
+                <LocalizationProvider dateAdapter={AdapterDateFns}>
+                  <TimePicker
+                    ampm={false}
+                    value={new Date(`${formData.date}T${Math.floor(formData.hour || 0).toString().padStart(2, '0')}:${(((formData.hour || 0) % 1) * 60).toString().padStart(2, '0')}`)}
+                    onChange={(newValue: Date | null) => {
+                      if (newValue) {
+                        setFormData({ ...formData, hour: newValue.getHours() + newValue.getMinutes() / 60 });
+                      }
+                    }}
+                    slotProps={{ textField: { fullWidth: true, size: 'small' } }}
+                  />
+                </LocalizationProvider>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Models & Quantities</label>
+              {(formData.item || []).map((item: any, index: number) => (
+                <div key={index} className="flex gap-3 animate-in slide-in-from-left-2">
+                  <Autocomplete
+                    className="flex-1"
+                    freeSolo
+                    options={modelOptions}
+                    filterOptions={filterOptions}
+                    getOptionLabel={(option) => {
+                      if (typeof option === 'string') return option;
+                      return `${option.part_id} : ${option.description}`;
+                    }}
+                    value={item.model || ''}
+                    onChange={(_, newValue) => {
+                      const newItems = [...(formData.item || [])];
+                      if (newValue && typeof newValue === 'object') {
+                        newItems[index].model = newValue.model;
+                      } else if (typeof newValue === 'string') {
+                        newItems[index].model = newValue;
+                      } else {
+                        newItems[index].model = '';
+                      }
+                      setFormData({ ...formData, item: newItems });
+                    }}
+                    onInputChange={(_, newInputValue, reason) => {
+                      if (reason === 'input') {
+                        const newItems = [...(formData.item || [])];
+                        newItems[index].model = newInputValue;
+                        setFormData({ ...formData, item: newItems });
+                      }
+                    }}
+                    renderInput={(params) => (
+                      <TextField 
+                        {...params} 
+                        placeholder="Search Model Name or ID..." 
+                        size="small" 
+                        sx={{
+                          '& .MuiOutlinedInput-root': {
+                            borderRadius: '0.75rem',
+                            backgroundColor: 'white',
+                          }
+                        }}
+                      />
+                    )}
+                  />
+
+                  <input
+                    type="number"
+                    placeholder="Quantity"
+                    value={item.quantity || ''}
+                    onChange={(e) => {
+                      const newItems = [...(formData.item || [])];
+                      newItems[index].quantity = parseInt(e.target.value) || 0;
+                      setFormData({ ...formData, item: newItems });
+                    }}
+                    className="w-32 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                  />
+                  
+                  {(formData.item || []).length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => setFormData({ ...formData, item: (formData.item || []).filter((_, i) => i !== index) })}
+                      className="p-2 text-rose-500 hover:bg-rose-50 rounded-lg transition-colors"
+                    >
+                      <Trash2 size={18} />
+                    </button>
+                  )}
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={() => setFormData({ ...formData, item: [...(formData.item || []), { model: '', quantity: 0 }] })}
+                className="inline-flex items-center gap-2 text-xs font-bold text-blue-600 hover:text-blue-700 transition-colors px-1"
+              >
+                <Plus size={14} /> Add Another Model
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-4 border-t border-slate-100">
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Manpower</label>
+                <input
+                  type="number"
+                  placeholder="Manpower"
+                  value={formData.manpower || ''}
+                  onChange={(e) => setFormData({ ...formData, manpower: parseInt(e.target.value) || 0 })}
+                  className="w-full border-slate-200 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 outline-none"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Target Units</label>
+                <input
+                  type="number"
+                  placeholder="Target Units"
+                  value={formData.target_units || ''}
+                  onChange={(e) => setFormData({ ...formData, target_units: parseInt(e.target.value) || 0 })}
+                  className="w-full border-slate-200 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 outline-none"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Calculated Produced</label>
+                <div className="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-2 text-slate-800 font-bold">
+                  {calculateUnitsProduced(formData.item || [])}
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Employee ID</label>
+                <input
+                  type="number"
+                  placeholder="Employee ID"
+                  value={formData.operator_id || ''}
+                  onChange={(e) => {
+                    const opId = parseInt(e.target.value);
+                    const op = operators.find(o => o.id === opId);
+                    setFormData({ ...formData, operator_id: opId, operator_name: op?.name || '', team: op?.team || '' });
+                  }}
+                  className="w-full border-slate-200 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 outline-none"
+                  required
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Name / Team (Autofill)</label>
+                <div className="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-2 text-slate-900 ">
+                  {formData.operator_name ? `${formData.operator_name} (${formData.team})` : 'Enter ID to autofill...'}
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Remarks</label>
+              <textarea
+                placeholder="Enter production notes or issues..."
+                value={formData.remarks || ''}
+                onChange={(e) => setFormData({ ...formData, remarks: e.target.value })}
+                className="w-full border-slate-200 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 outline-none"
+                rows={2}
+              />
+            </div>
+
+            <div className="flex gap-3 pt-4">
+              <button type="submit" className="bg-blue-600 text-white px-8 py-2.5 rounded-lg font-bold shadow-lg shadow-blue-200 hover:bg-blue-700 transition-all flex items-center gap-2">
+                {editingId ? <Check size={20} /> : <Plus size={20} />} 
+                {editingId ? 'Update Record' : 'Add Record'}
+              </button>
+              {editingId && (
+                <button type="button" onClick={resetForm} className="bg-slate-100 text-slate-600 px-8 py-2.5 rounded-lg font-bold hover:bg-slate-200 transition-all">
+                  Cancel
+                </button>
+              )}
+            </div>
+          </form>
+        </div>
+      )}
+
       {/* Filters & Records Table Container */}
       <div className="bg-white rounded-xl shadow-xl border border-slate-200 transition-all duration-300 relative">
-        
-        {/* COMPACT Header Section */}
+  
+        {/* Header Section */}
         <div className="px-5 py-3 rounded-t-xl border-b border-slate-100 bg-gradient-to-r from-slate-50 to-white flex flex-col md:flex-row md:items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <div className={`w-2.5 h-2.5 rounded-full transition-all duration-500 ${hasActiveFilters ? 'bg-amber-500 animate-pulse shadow-[0_0_8px_rgba(245,158,11,0.6)]' : 'bg-slate-300'}`} />
@@ -771,13 +1010,13 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
               <FileText size={14} /> Export PDF
             </button>
             <button
-              onClick={handleExportToExcel}
+              onClick={handleExportToExcel} 
               className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-emerald-600 border border-emerald-600 rounded-lg hover:bg-emerald-700 shadow-sm transition-all"
             >
               <FileSpreadsheet size={14} /> Export Excel
             </button>
             <button
-              onClick={handleCopyFullTable}
+              onClick={handleCopyFullTable} 
               className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-indigo-600 border border-indigo-600 rounded-lg hover:bg-indigo-700 shadow-sm transition-all"
             >
               <Copy size={14} /> Copy Table
@@ -907,7 +1146,7 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
 
                 // Models Render Logic: Shows the quantity in UI, but make it select-none so it skips manual highlighting
                 const modelsContent = production.item && production.item.length > 0 
-                  ? production.item.map((m, idx, arr) => (
+                  ? production.item.map((m: any, idx: number, arr: any[]) => (
                       <span key={idx}>
                         {m.model}
                         <span className="select-none opacity-60"> ({m.quantity})</span>
@@ -924,11 +1163,6 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
                       </span>
                     ))
                   : '-';
-
-                // Parse downtimes and defects for UI display
-                const dt = parseDowntime(production.remarks);
-                const defectFromRemarks = parseDefectsFromRemarks(production.remarks);
-                const finalDefectQty = (Number(production.defect_qty) || 0) + defectFromRemarks;
 
                 return (
                   <tr key={production.id} className={`group hover:bg-indigo-50 border border-gray-300 transition-colors ${getTeamBackgroundColor(production.team)}`}>
@@ -968,15 +1202,15 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
                     </td>
 
                     <td className="px-2 py-1.5 text-center text-[12px] border border-slate-300 font-mono text-slate-700">
-                      {dt.planned === 0 ? '' : dt.planned}
+                      {production.plan_dt || ''}
                     </td>
 
                     <td className="px-2 py-1.5 text-center text-[12px] border border-slate-300 font-mono text-slate-700">
-                      {dt.unplanned === 0 ? '' : dt.unplanned}
+                      {production.unplan_dt || ''}
                     </td>
 
                     <td className="px-2 py-1.5 text-center text-[12px] border border-slate-300 font-mono text-slate-700">
-                      {finalDefectQty === 0 ? '' : finalDefectQty}
+                      {production.defect_qty || ''}
                     </td>
 
                     <td 

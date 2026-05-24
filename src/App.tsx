@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { motion, AnimatePresence, useAnimation } from 'framer-motion';
 import { BarChart3, TrendingUp, Calendar, Bell, Settings, Sun, Target, FileSpreadsheet } from 'lucide-react'; 
+import { ThemeProvider } from './theme-context';
+import ThemeSettings from './components/ThemeSettings';
 import confetti from 'canvas-confetti';
 
 // Project Component Imports
@@ -9,7 +11,7 @@ import YieldCalendar from './components/YieldCalendar';
 import HourlyProductionSheet from './components/HourlyProductionSheet';
 import DayProductionSheet from './components/DayProductionSheet';
 import SummaryChartSheet from './components/SummaryChartSheet';
-import KPITrackingSheet from './components/KPITrackingSheet'; 
+import PlanVsActualSheet from './components/PlanVsActualSheet'; 
 import ProductionRecordsTable from'./components/ProductionRecordsTable';
 import ViewUtlizationReport from'./components/ViewUtlizationReport';
 
@@ -17,6 +19,7 @@ import ViewUtlizationReport from'./components/ViewUtlizationReport';
 
 function Dashboard() {
   const [activeTab, setActiveTab] = useState('summary'); 
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
   const [isScrolled, setIsScrolled] = useState(false);
 
@@ -41,10 +44,11 @@ function Dashboard() {
   // Tabs Definition
   const tabs = [
     { id: 'summary', label: 'Summary & Charts', icon: TrendingUp },
-    { id: 'records', label: 'Hourly Records', icon: BarChart3 },
+    { id: 'records', label: 'Hourly Records', icon: BarChart3 },        
     { id: 'calendar', label: 'Yield Calendar', icon: Calendar },
-    { id: 'excel', label: 'Excel Entry', icon: FileSpreadsheet },
-    { id: 'utlization', label: 'Utilization Report', icon: FileSpreadsheet }
+
+    { id: 'utlization', label: 'Utilization Report', icon: FileSpreadsheet },
+    { id: 'planvsactual', label: 'Plan Vs Actual', icon: BarChart3 },
   ];
 
   const POP_SOUND_URL = 'https://codeskulptor-demos.commondatastorage.googleapis.com/pang/pop.mp3';
@@ -72,7 +76,9 @@ function Dashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-[#f8fafc] text-slate-900 font-sans selection:bg-blue-100">
+    <div 
+      className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50/30 to-slate-100 dark:from-slate-900 dark:via-slate-800 dark:to-slate-950 text-slate-900 dark:text-slate-100 font-sans selection:bg-blue-400/20 dark:selection:bg-blue-500/30 transition-all duration-500"
+    >
       
       {/* HEADER SECTION WITH TABS INTEGRATED */}
       <header 
@@ -153,7 +159,13 @@ function Dashboard() {
               </div>
             </div>
             <button className="p-1.5 text-slate-400 hover:text-blue-600 bg-white border border-slate-200 rounded-lg shadow-sm transition-all"><Bell size={16} /></button>
-            <button className="p-1.5 text-slate-400 hover:text-slate-900 bg-white border border-slate-200 rounded-lg shadow-sm transition-all"><Settings size={16} /></button>
+            <button 
+              onClick={() => setIsSettingsOpen(true)}
+              className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 bg-white/80 dark:bg-slate-800/80 border border-slate-200/60 dark:border-slate-700/60 backdrop-blur-sm rounded-lg shadow-sm hover:shadow-md transition-all duration-200"
+              title="Theme Settings"
+            >
+              <Settings size={16} />
+            </button>
           </div>
           
         </div>
@@ -173,12 +185,18 @@ function Dashboard() {
             {activeTab === 'records' && <HourlyProductionSheet selectedDate={selectedDate} />}
             {activeTab === 'dayrecords' && <DayProductionSheet selectedDate={selectedDate} />}
             {activeTab === 'calendar' && <YieldCalendar />}
-            {activeTab === 'excel' && <ProductionRecordsTable selectedDate={selectedDate} />}
+
             {activeTab === 'utlization' && <ViewUtlizationReport selectedDate={selectedDate} />}
-            {activeTab === 'kpi' && <KPITrackingSheet selectedDate={selectedDate} />}
+            {activeTab === 'planvsactual' && <PlanVsActualSheet selectedDate={selectedDate} />}
           </motion.div>
         </AnimatePresence>
       </main>
+
+      {/* Theme Settings Modal */}
+      <ThemeSettings 
+        isOpen={isSettingsOpen} 
+        onClose={() => setIsSettingsOpen(false)} 
+      />
     </div>
   );
 }
@@ -188,7 +206,7 @@ export default function App() {
   return (
     <Router>
       <Routes>
-        <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/dashboard" element={<ThemeProvider><Dashboard /></ThemeProvider>} />
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
       </Routes>
     </Router>

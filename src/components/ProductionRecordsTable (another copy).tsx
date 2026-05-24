@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Save, Plus, Trash2, User, Calendar, Hash, Clipboard, Activity } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
@@ -16,15 +16,32 @@ interface ProductionRow {
   remarks: string;
 }
 
+const getPercentageStyle = (val: number, isDarkBackground = false): React.CSSProperties => {
+  if (val > 100 || val < 0) {
+    return { backgroundColor: '#dc2626', color: 'white', fontWeight: 'bold' }; 
+  }
+  
+  let textColor = '';
+  if (val >= 90) {
+    textColor = isDarkBackground ? '#4ade80' : '#16a34a';
+  } else if (val >= 75) {
+    textColor = isDarkBackground ? '#facc15' : '#eab308';
+  } else if (val >= 60) {
+    textColor = isDarkBackground ? '#fb923c' : '#991b1b';
+  } else {
+    textColor = isDarkBackground ? '#ef4444' : '#dc2626';
+  }
+
+  return { color: textColor, fontWeight: 'bold' };
+};
+
 export default function AddProductionRecord() {
-  // --- Header State ---
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
   const [operatorId, setOperatorId] = useState('');
   const [operatorName, setOperatorName] = useState('');
   const [team, setTeam] = useState('');
   const [isSaving, setIsSaving] = useState(false);
 
-  // --- Table State ---
   const [rows, setRows] = useState<ProductionRow[]>([
     { 
       timeDuration: '08:30 - 09:00', modelName: '', 
@@ -34,7 +51,6 @@ export default function AddProductionRecord() {
     }
   ]);
 
-  // --- Auto-fetch Operator ---
   useEffect(() => {
     const fetchOperator = async () => {
       if (operatorId.length >= 3) {
@@ -56,13 +72,53 @@ export default function AddProductionRecord() {
     fetchOperator();
   }, [operatorId]);
 
-  // --- Row Actions ---
   const addRow = () => {
+    const lastRow = rows[rows.length - 1];
+    let nextDuration = '09:00 - 10:00'; 
+
+    if (lastRow && lastRow.timeDuration.includes('-')) {
+      const parts = lastRow.timeDuration.split('-').map(t => t.trim());
+      const lastEndTime = parts[1];
+
+      if (lastEndTime) {
+        const [hours, minutes] = lastEndTime.split(':').map(Number);
+        const newStart = lastEndTime;
+        const newEndHours = (hours + 1).toString().padStart(2, '0');
+        const newEnd = `${newEndHours}:${minutes.toString().padStart(2, '0')}`;
+        nextDuration = `${newStart} - ${newEnd}`;
+      }
+    }
+
+    // Automatic Break Detection
+    let defaultPlannedDt = 0;
+    let defaultRemarks = '';
+
+    if (nextDuration.includes('10:00 - 11:00')) {
+      defaultPlannedDt = 15;
+      defaultRemarks = 'Break 15 Minutes';
+    } else if (nextDuration.includes('12:00 - 13:00')) {
+      defaultPlannedDt = 25;
+      defaultRemarks = 'Break 25 Minutes';
+    } else if (nextDuration.includes('15:00 - 16:00')) {
+      defaultPlannedDt = 15;
+      defaultRemarks = 'Break 15 Minutes';
+    } else if (nextDuration.includes('18:00 - 19:00')) {
+      defaultPlannedDt = 10;
+      defaultRemarks = 'Break 10 Minutes';
+    }else if (nextDuration.includes('20:00 - 21:00')) {
+      defaultPlannedDt = 25;
+      defaultRemarks = 'Break 25 Minutes';
+    }
+
+
     setRows([...rows, { 
-      timeDuration: '', modelName: '', 
+      timeDuration: nextDuration, 
+      modelName: '', 
       plannedMp: 1, actualMp: 1, totalAvailTime: 60, 
-      plannedDt: 0, unplannedDt: 0, 
-      targetOutput: 0, actualOutput: 0, goodOutput: 0, remarks: '' 
+      plannedDt: defaultPlannedDt, 
+      unplannedDt: 0, 
+      targetOutput: 0, actualOutput: 0, goodOutput: 0, 
+      remarks: defaultRemarks 
     }]);
   };
 
@@ -73,26 +129,20 @@ export default function AddProductionRecord() {
   const updateRow = (index: number, field: keyof ProductionRow, value: any) => {
     const newRows = [...rows];
     newRows[index] = { ...newRows[index], [field]: value };
-    
-    // Auto-fill Good Output if Actual Output is updated and Good Output is 0
     if (field === 'actualOutput' && newRows[index].goodOutput === 0) {
        newRows[index].goodOutput = value;
     }
-    
     setRows(newRows);
   };
 
-  // --- Smart Excel Parser ---
   const parseExcelClipboard = (text: string): string[][] => {
     const rows: string[][] = [];
     let currentRow: string[] = [];
     let currentCell = "";
     let inQuote = false;
-
     for (let i = 0; i < text.length; i++) {
       const char = text[i];
       const nextChar = text[i + 1];
-
       if (inQuote) {
         if (char === '"' && nextChar === '"') { currentCell += '"'; i++; } 
         else if (char === '"') { inQuote = false; } 
@@ -116,43 +166,24 @@ export default function AddProductionRecord() {
     return rows;
   };
 
-  // --- Paste Handler (With Skip Logic) ---
   const handlePaste = (e: React.ClipboardEvent<HTMLInputElement | HTMLTextAreaElement>, rowIndex: number, colKey: keyof ProductionRow) => {
     e.preventDefault();
     const pasteData = e.clipboardData.getData('text');
     const parsedRows = parseExcelClipboard(pasteData);
     if (parsedRows.length === 0) return;
 
-    // This map perfectly mirrors the Excel columns. 'SKIP' represents calculated/non-editable fields
     const excelColumnMap: (keyof ProductionRow | 'SKIP')[] = [
-      'timeDuration',
-      'modelName',
-      'plannedMp',
-      'actualMp',
-      'totalAvailTime',
-      'plannedDt',
-      'SKIP', // Actual Available Time
-      'unplannedDt',
-      'SKIP', // Actual Run Time
-      'SKIP', // Line Utilization % (Actual)
-      'SKIP', // Line Utilization % (Total)
-      'targetOutput',
-      'actualOutput',
-      'SKIP', // Efficiency (%)
-      'goodOutput',
-      'SKIP', // Quality (FPY)
-      'remarks'
+      'timeDuration', 'modelName', 'plannedMp', 'actualMp', 'totalAvailTime', 'plannedDt',
+      'SKIP', 'unplannedDt', 'SKIP', 'SKIP', 'SKIP', 'targetOutput', 'actualOutput',
+      'SKIP', 'goodOutput', 'SKIP', 'remarks'
     ];
 
     const startColIndex = excelColumnMap.indexOf(colKey);
     if (startColIndex === -1) return;
-
     const newRows = [...rows];
-
     parsedRows.forEach((cellValues, i) => {
       if (cellValues.length === 1 && cellValues[0].trim() === '') return;
       const currentRowIndex = rowIndex + i;
-
       if (!newRows[currentRowIndex]) {
         newRows[currentRowIndex] = { 
           timeDuration: '', modelName: '', plannedMp: 1, actualMp: 1, 
@@ -160,11 +191,8 @@ export default function AddProductionRecord() {
           targetOutput: 0, actualOutput: 0, goodOutput: 0, remarks: '' 
         };
       }
-
       cellValues.forEach((cellValue, j) => {
         const currentField = excelColumnMap[startColIndex + j];
-        
-        // Skip updating if it's a read-only/calculated column in Excel
         if (currentField && currentField !== 'SKIP') {
           let cleanValue: string | number = cellValue.trim();
           if (cleanValue.startsWith('"') && cleanValue.endsWith('"')) {
@@ -180,7 +208,6 @@ export default function AddProductionRecord() {
     setRows(newRows);
   };
 
-  // --- SAVE LOGIC ---
   const handleSave = async () => {
     if (!operatorId || !team) return alert("Please enter a valid Employee ID");
     setIsSaving(true);
@@ -188,24 +215,16 @@ export default function AddProductionRecord() {
     const recordsToSave = rows
       .filter(row => row.modelName || row.actualOutput > 0) 
       .map(row => {
-        // Parse time start "08:30 - 09:00" -> 8.5
         let decimalHour = 0;
-        const timeMatch = row.timeDuration.match(/(\d{2}):(\d{2})/);
-        if (timeMatch) {
-           const h = parseInt(timeMatch[1], 10);
-           const m = parseInt(timeMatch[2], 10);
-           decimalHour = h + (m / 60);
-        }
-
-        let constructedRemarks = [];
-        if (row.plannedDt > 0) constructedRemarks.push(`Break ${row.plannedDt} mins`);
-        if (row.unplannedDt > 0) constructedRemarks.push(`Delay ${row.unplannedDt} mins`);
-        if (row.actualOutput > row.goodOutput) {
-            constructedRemarks.push(`Fault ${row.actualOutput - row.goodOutput} nos`);
-        }
-        if (row.remarks) constructedRemarks.push(row.remarks);
+        const timeMatches = row.timeDuration.match(/(\d{1,2}):(\d{2})/g); 
         
-        const finalRemarks = constructedRemarks.join(' | ');
+        if (timeMatches && timeMatches.length >= 2) {
+           const endParts = timeMatches[1].split(':');
+           decimalHour = parseInt(endParts[0], 10) + (parseInt(endParts[1], 10) / 60);
+        } else if (timeMatches && timeMatches.length === 1) {
+           const matchParts = timeMatches[0].split(':');
+           decimalHour = parseInt(matchParts[0], 10) + (parseInt(matchParts[1], 10) / 60);
+        }
 
         return {
           date,
@@ -216,8 +235,10 @@ export default function AddProductionRecord() {
           manpower: row.actualMp,
           target_units: row.targetOutput,
           units_produced: row.actualOutput,
+          plan_dt: row.plannedDt,
+          unplan_dt: row.unplannedDt,
           defect_qty: row.actualOutput - row.goodOutput,
-          remarks: finalRemarks,
+          remarks: row.remarks,
           item: [{ model: row.modelName, quantity: row.actualOutput }]
         };
       });
@@ -243,6 +264,7 @@ export default function AddProductionRecord() {
 
   const inputClass = "w-full h-full px-2 py-2 bg-transparent outline-none focus:bg-blue-50 focus:ring-2 focus:ring-inset focus:ring-blue-500 transition-all text-xs";
   const numInputClass = `${inputClass} text-center font-mono`;
+  const cellClass = "border border-slate-300 p-0 text-center align-middle font-bold text-slate-700 h-10";
 
   return (
     <div className="max-w-[100vw] mx-auto p-4 md:p-6 bg-slate-50 min-h-screen font-sans">
@@ -285,126 +307,78 @@ export default function AddProductionRecord() {
           <table className="w-full text-xs border-collapse whitespace-nowrap min-w-[1600px]">
             <thead className="bg-[#1E40AF] text-white">
               <tr>
-                <th className="border border-slate-400 px-2 py-3 w-10 text-center font-bold">SL</th>
-                <th className="border border-slate-400 px-2 py-3 w-32 font-bold text-center">Time Duration</th>
-                <th className="border border-slate-400 px-2 py-3 w-48 font-bold text-left">Model Name</th>
-                <th className="border border-slate-400 px-2 py-3 w-16 font-bold text-center whitespace-pre-wrap">Plan MP</th>
-                <th className="border border-slate-400 px-2 py-3 w-16 font-bold text-center whitespace-pre-wrap">Actual MP</th>
-                <th className="border border-slate-400 px-2 py-3 w-20 font-bold text-center whitespace-pre-wrap">Total Avail Time (min)</th>
-                <th className="border border-slate-400 px-2 py-3 w-24 font-bold text-center whitespace-pre-wrap">Planned DT (Break/Setup)</th>
-                <th className="border border-slate-400 px-2 py-3 w-20 font-bold text-center text-amber-200 whitespace-pre-wrap">Actual Avail Time</th>
-                <th className="border border-slate-400 px-2 py-3 w-24 font-bold text-center whitespace-pre-wrap">Un-Planned DT (Delay)</th>
-                <th className="border border-slate-400 px-2 py-3 w-20 font-bold text-center text-amber-200 whitespace-pre-wrap">Actual Run Time</th>
-                <th className="border border-slate-400 px-2 py-3 w-20 font-bold text-center text-emerald-200 whitespace-pre-wrap">Line Util % (Actual)</th>
-                <th className="border border-slate-400 px-2 py-3 w-20 font-bold text-center text-emerald-200 whitespace-pre-wrap">Line Util % (Total)</th>
-                <th className="border border-slate-400 px-2 py-3 w-20 font-bold text-center">Target Output</th>
-                <th className="border border-slate-400 px-2 py-3 w-20 font-bold text-center">Actual Output</th>
-                <th className="border border-slate-400 px-2 py-3 w-20 font-bold text-center text-blue-200 whitespace-pre-wrap">Efficiency %</th>
-                <th className="border border-slate-400 px-2 py-3 w-20 font-bold text-center">Good Output</th>
-                <th className="border border-slate-400 px-2 py-3 w-20 font-bold text-center text-blue-200 whitespace-pre-wrap">Quality (FPY) %</th>
-                <th className="border border-slate-400 px-2 py-3 w-48 font-bold text-left">Remarks</th>
-                <th className="border border-slate-400 px-2 py-3 w-10"></th>
+                <th className="border-[0.5px] border-white/30 px-2 py-3 w-10 text-center text-[10px] whitespace-normal leading-tight font-bold">SL.No</th>
+                <th className="border-[0.5px] border-white/30 px-2 py-3 min-w-[120px] text-[10px] whitespace-normal leading-tight font-bold text-center">Time Duration</th>
+                <th className="border-[0.5px] border-white/30 px-2 py-3 min-w-[150px] text-[10px] whitespace-normal leading-tight font-bold text-left">Model Name</th>
+                <th className="border-[0.5px] border-white/30 px-2 py-3 w-16 text-[10px] whitespace-normal leading-tight font-bold text-center">Planned Manpower</th>
+                <th className="border-[0.5px] border-white/30 px-2 py-3 w-16 text-[10px] whitespace-normal leading-tight font-bold text-center">Actual Manpower</th>
+                <th className="border-[0.5px] border-white/30 px-2 py-3 w-20 text-[10px] whitespace-normal leading-tight font-bold text-center">Total Available Time (min)</th>
+                <th className="border-[0.5px] border-white/30 px-2 py-3 w-28 text-[10px] whitespace-normal leading-tight font-bold text-center text-amber-200">Planned Downtime (min)</th>
+                <th className="border-[0.5px] border-white/30 px-2 py-3 w-20 text-[10px] whitespace-normal leading-tight font-bold text-center">Actual Available Time (min)</th>
+                <th className="border-[0.5px] border-white/30 px-2 py-3 w-24 text-[10px] whitespace-normal leading-tight font-bold text-center text-amber-200">Un-Planned Downtime (min)</th>
+                <th className="border-[0.5px] border-white/30 px-2 py-3 w-32 text-[10px] whitespace-normal leading-tight font-bold text-center">Actual Run Time (min)</th>
+                <th className="border-[0.5px] border-white/30 px-2 py-3 w-32 text-[10px] whitespace-normal leading-tight font-bold text-center text-emerald-200">Line Utilization (%)</th>
+                <th className="border-[0.5px] border-white/30 px-2 py-3 w-32 text-[10px] whitespace-normal leading-tight font-bold text-center text-emerald-200">Total Utilization (%)</th>
+                <th className="border-[0.5px] border-white/30 px-2 py-3 w-20 text-[10px] whitespace-normal leading-tight font-bold text-center">Target Output (Qty)</th>
+                <th className="border-[0.5px] border-white/30 px-2 py-3 w-20 text-[10px] whitespace-normal leading-tight font-bold text-center">Actual Output (Qty)</th>
+                <th className="border-[0.5px] border-white/30 px-2 py-3 w-32 text-[10px] whitespace-normal leading-tight font-bold text-center text-blue-200">Efficiency (%)</th>
+                <th className="border-[0.5px] border-white/30 px-2 py-3 w-20 text-[10px] whitespace-normal leading-tight font-bold text-center">Good Output (Qty)</th>
+                <th className="border-[0.5px] border-white/30 px-2 py-3 w-32 text-[10px] whitespace-normal leading-tight font-bold text-center text-blue-200">Quality (FPY) (%)</th>
+                <th className="border-[0.5px] border-white/30 px-2 py-3 min-w-[230px] text-[10px] whitespace-normal leading-tight font-bold text-left">Remarks</th>
+                <th className="border-[0.5px] border-white/30 w-10"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-300">
               {rows.map((row, index) => {
                 const actualAvailTime = row.totalAvailTime - row.plannedDt;
                 const actualRunTime = actualAvailTime - row.unplannedDt;
-                
-                const lineUtilActual = actualAvailTime > 0 ? ((actualRunTime / actualAvailTime) * 100).toFixed(1) : "0.0";
-                const lineUtilTotal = row.totalAvailTime > 0 ? ((actualRunTime / row.totalAvailTime) * 100).toFixed(1) : "0.0";
-                const efficiency = row.targetOutput > 0 ? ((row.actualOutput / row.targetOutput) * 100).toFixed(1) : "0.0";
-                const quality = row.actualOutput > 0 ? ((row.goodOutput / row.actualOutput) * 100).toFixed(1) : "0.0";
+                const pctUtilActual = actualAvailTime > 0 ? (actualRunTime / actualAvailTime) * 100 : 0;
+                const pctUtilTotal = row.totalAvailTime > 0 ? (actualRunTime / row.totalAvailTime) * 100 : 0;
+                const pctEff = row.targetOutput > 0 ? (row.actualOutput / row.targetOutput) * 100 : 0;
+                const pctQual = row.actualOutput > 0 ? (row.goodOutput / row.actualOutput) * 100 : 0;
 
                 return (
                   <tr key={index} className={`group hover:bg-slate-50 ${index % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}`}>
                     <td className="border border-slate-300 text-center font-semibold text-slate-500">{index + 1}</td>
-                    
                     <td className="border border-slate-300 p-0 h-10">
-                      <input type="text" value={row.timeDuration} onChange={e => updateRow(index, 'timeDuration', e.target.value)} onPaste={(e) => handlePaste(e, index, 'timeDuration')} className={`${inputClass} font-mono text-center`} placeholder="08:30 - 09:00" />
+                      <input type="text" value={row.timeDuration} onChange={e => updateRow(index, 'timeDuration', e.target.value)} onPaste={(e) => handlePaste(e, index, 'timeDuration')} className={`${inputClass} font-mono text-center`} />
                     </td>
-                    
-                    {/* Multi-line Editable Model Name */}
                     <td className="border border-slate-300 p-0 h-auto">
-                      <textarea 
-                        value={row.modelName} 
-                        onChange={e => updateRow(index, 'modelName', e.target.value)} 
-                        onPaste={(e) => handlePaste(e, index, 'modelName')} 
-                        className={`${inputClass} resize-none overflow-hidden leading-tight pt-2.5`}
-                        rows={1}
-                        style={{ height: '100%', minHeight: '2.5rem', whiteSpace: 'pre-wrap' }} 
-                        placeholder="Model Name"
-                      />
+                      <textarea value={row.modelName} onChange={e => updateRow(index, 'modelName', e.target.value)} onPaste={(e) => handlePaste(e, index, 'modelName')} className={`${inputClass} resize-none overflow-hidden leading-tight pt-2.5 min-h-[40px]`} rows={1} style={{ height: '100%', whiteSpace: 'pre-wrap' }} placeholder="Model Name" />
                     </td>
-                    
                     <td className="border border-slate-300 p-0 h-10">
                       <input type="number" value={row.plannedMp} onChange={e => updateRow(index, 'plannedMp', parseInt(e.target.value))} onPaste={(e) => handlePaste(e, index, 'plannedMp')} className={numInputClass} />
                     </td>
-                    
                     <td className="border border-slate-300 p-0 h-10">
                       <input type="number" value={row.actualMp} onChange={e => updateRow(index, 'actualMp', parseInt(e.target.value))} onPaste={(e) => handlePaste(e, index, 'actualMp')} className={numInputClass} />
                     </td>
-                    
                     <td className="border border-slate-300 p-0 h-10">
                       <input type="number" value={row.totalAvailTime} onChange={e => updateRow(index, 'totalAvailTime', parseInt(e.target.value))} onPaste={(e) => handlePaste(e, index, 'totalAvailTime')} className={`${numInputClass} font-bold`} />
                     </td>
-                    
                     <td className="border border-slate-300 p-0 h-10 bg-rose-50/30">
                       <input type="number" value={row.plannedDt} onChange={e => updateRow(index, 'plannedDt', parseInt(e.target.value))} onPaste={(e) => handlePaste(e, index, 'plannedDt')} className={`${numInputClass} text-rose-600`} />
                     </td>
-
-                    <td className="border border-slate-300 p-0 h-10 bg-slate-100 text-center align-middle font-bold text-slate-700">
-                      {actualAvailTime}
-                    </td>
-
+                    <td className={`${cellClass} bg-slate-100`}>{actualAvailTime}</td>
                     <td className="border border-slate-300 p-0 h-10 bg-orange-50/30">
                       <input type="number" value={row.unplannedDt} onChange={e => updateRow(index, 'unplannedDt', parseInt(e.target.value))} onPaste={(e) => handlePaste(e, index, 'unplannedDt')} className={`${numInputClass} text-orange-600`} />
                     </td>
-
-                    <td className="border border-slate-300 p-0 h-10 bg-slate-100 text-center align-middle font-bold text-slate-700">
-                      {actualRunTime}
-                    </td>
-
-                    <td className="border border-slate-300 p-0 h-10 bg-emerald-50/30 text-center align-middle font-bold text-emerald-700">
-                      {lineUtilActual}%
-                    </td>
-
-                    <td className="border border-slate-300 p-0 h-10 bg-emerald-50/30 text-center align-middle font-bold text-emerald-700">
-                      {lineUtilTotal}%
-                    </td>
-
+                    <td className={`${cellClass} bg-slate-100`}>{actualRunTime}</td>
+                    <td className={cellClass} style={getPercentageStyle(pctUtilActual)}>{pctUtilActual.toFixed(1)}%</td>
+                    <td className={cellClass} style={getPercentageStyle(pctUtilTotal)}>{pctUtilTotal.toFixed(1)}%</td>
                     <td className="border border-slate-300 p-0 h-10">
                       <input type="number" value={row.targetOutput} onChange={e => updateRow(index, 'targetOutput', parseInt(e.target.value))} onPaste={(e) => handlePaste(e, index, 'targetOutput')} className={numInputClass} />
                     </td>
-                    
                     <td className="border border-slate-300 p-0 h-10">
-                      <input type="number" value={row.actualOutput} onChange={e => updateRow(index, 'actualOutput', parseInt(e.target.value))} onPaste={(e) => handlePaste(e, index, 'actualOutput')} className={`${numInputClass} font-bold text-blue-700 bg-blue-50/30`} />
+                      <input type="number" value={row.actualOutput} onChange={e => updateRow(index, 'actualOutput', parseInt(e.target.value))} onPaste={(e) => handlePaste(e, index, 'actualOutput')} className={`${numInputClass} font-bold`} />
                     </td>
-
-                    <td className="border border-slate-300 p-0 h-10 bg-blue-50/30 text-center align-middle font-bold text-blue-700">
-                      {efficiency}%
-                    </td>
-
+                    <td className={cellClass} style={getPercentageStyle(pctEff)}>{pctEff.toFixed(1)}%</td>
                     <td className="border border-slate-300 p-0 h-10">
-                      <input type="number" value={row.goodOutput} onChange={e => updateRow(index, 'goodOutput', parseInt(e.target.value))} onPaste={(e) => handlePaste(e, index, 'goodOutput')} className={`${numInputClass} font-bold text-green-700 bg-green-50/30`} />
+                      <input type="number" value={row.goodOutput} onChange={e => updateRow(index, 'goodOutput', parseInt(e.target.value))} onPaste={(e) => handlePaste(e, index, 'goodOutput')} className={`${numInputClass} font-bold`} />
                     </td>
-
-                    <td className="border border-slate-300 p-0 h-10 bg-indigo-50/30 text-center align-middle font-bold text-indigo-700">
-                      {quality}%
-                    </td>
-
+                    <td className={cellClass} style={getPercentageStyle(pctQual)}>{pctQual.toFixed(1)}%</td>
                     <td className="border border-slate-300 p-0 h-auto">
-                      <textarea 
-                        value={row.remarks} 
-                        onChange={e => updateRow(index, 'remarks', e.target.value)} 
-                        onPaste={(e) => handlePaste(e, index, 'remarks')} 
-                        className={`${inputClass} resize-none overflow-hidden leading-tight pt-2`}
-                        rows={1}
-                        style={{ height: '100%', minHeight: '2rem', whiteSpace: 'pre-wrap' }} 
-                        placeholder="Remarks..."
-                      />
+                      <textarea value={row.remarks} onChange={e => updateRow(index, 'remarks', e.target.value)} onPaste={(e) => handlePaste(e, index, 'remarks')} className={`${inputClass} resize-y overflow-auto leading-tight pt-2 min-h-[56px]`} rows={2} style={{ height: '100%', whiteSpace: 'pre-wrap' }} placeholder="Remarks..." />
                     </td>
-
                     <td className="border border-slate-300 p-0 text-center h-10 bg-white">
                       <button onClick={() => removeRow(index)} className="w-full h-full flex items-center justify-center text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors" tabIndex={-1}>
                         <Trash2 size={16}/>
@@ -420,7 +394,7 @@ export default function AddProductionRecord() {
         {/* Footer Actions */}
         <div className="p-4 bg-white border-t border-slate-200 flex justify-between items-center">
           <div className="text-xs text-slate-500 italic flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-md border border-slate-200">
-             <Clipboard size={14} className="text-blue-500" /> Click on "Time Duration" and paste from Excel. Calculated columns are automatically skipped!
+             <Clipboard size={14} className="text-blue-500" /> Click on "Time Duration" and paste from Excel.
           </div>
           <div className="flex gap-4">
             <button onClick={addRow} className="flex items-center gap-2 px-4 py-2 bg-slate-100 border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-200 transition-colors shadow-sm text-sm font-bold">
