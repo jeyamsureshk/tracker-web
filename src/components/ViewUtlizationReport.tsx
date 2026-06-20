@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
-  Calendar, Activity, FileSpreadsheet, Search, RefreshCw, 
-  Edit2, Trash2, Save, X, Download, Copy, Plus, User, Hash, Clipboard 
+  Activity, FileSpreadsheet, RefreshCw, 
+  Edit2, Trash2, Save, X, Download, Copy, Plus, User, Hash, Clipboard, Calendar
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import ExcelJS from 'exceljs';
@@ -27,6 +27,7 @@ interface ProductionRow {
 interface NewProductionRow {
   timeDuration: string;
   modelName: string;
+  items: any[]; // Track individual items in new rows for auto-summing
   plannedMp: number;
   actualMp: number;
   totalAvailTime: number;
@@ -36,6 +37,11 @@ interface NewProductionRow {
   actualOutput: number;
   goodOutput: number;
   remarks: string;
+}
+
+// Accept selectedDate as a prop from Dashboard
+interface ViewUtilizationReportProps {
+  selectedDate: string;
 }
 
 // --- Constants ---
@@ -49,6 +55,24 @@ const TEAM_PLANNED_MP: Record<string, number> = {
 };
 
 const ALL_TEAMS = Object.keys(TEAM_PLANNED_MP);
+
+// Available Time Slots
+const TIME_SLOTS = [
+  '08:30 - 09:00',
+  '09:00 - 10:00',
+  '10:00 - 11:00',
+  '11:00 - 12:00',
+  '12:00 - 13:00',
+  '13:00 - 14:00',
+  '14:00 - 15:00',
+  '15:00 - 16:00',
+  '16:00 - 17:00',
+  '17:00 - 18:00',
+  '18:00 - 19:00',
+  '19:00 - 20:00',
+  '20:00 - 21:00',
+  '21:00 - 22:00'
+];
 
 // --- Helper Functions ---
 const parseDefectsFromRemarks = (remarks: string | undefined) => {
@@ -86,10 +110,23 @@ const getPercentageStyle = (val: number, isDarkBackground = false): React.CSSPro
   return { color: textColor, fontWeight: 'bold' };
 };
 
+const formatRemarks = (text: string) => {
+  if (!text) return "";
+  return text.replace(/([^\s]+)/g, (word) => {
+    // If the word contains letters and is fully uppercase, skip modifying it
+    if (/[a-zA-Z]/.test(word) && word === word.toUpperCase()) {
+      return word;
+    }
+    // Otherwise, convert to Proper Case
+    return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+  });
+};
+
 // ============================================================================
 // ADD PRODUCTION SECTION COMPONENT
 // ============================================================================
 function AddProductionSection({ initialDate, onClose, onSuccess }: { initialDate: string, onClose: () => void, onSuccess: () => void }) {
+  // Use the global date to initialize the form, but let it be edited locally if needed
   const [date, setDate] = useState(initialDate);
   const [operatorId, setOperatorId] = useState('');
   const [operatorName, setOperatorName] = useState('');
@@ -98,12 +135,17 @@ function AddProductionSection({ initialDate, onClose, onSuccess }: { initialDate
 
   const [rows, setRows] = useState<NewProductionRow[]>([
     { 
-      timeDuration: '08:30 - 09:00', modelName: '', 
+      timeDuration: '08:30 - 09:00', modelName: '', items: [{ model: '', quantity: 0 }],
       plannedMp: 1, actualMp: 1, totalAvailTime: 30, 
       plannedDt: 0, unplannedDt: 0, 
       targetOutput: 0, actualOutput: 0, goodOutput: 0, remarks: '' 
     }
   ]);
+
+  // Sync internal form date if parent date changes
+  useEffect(() => {
+    setDate(initialDate);
+  }, [initialDate]);
 
   useEffect(() => {
     const fetchOperator = async () => {
@@ -130,17 +172,22 @@ function AddProductionSection({ initialDate, onClose, onSuccess }: { initialDate
     const lastRow = rows[rows.length - 1];
     let nextDuration = '09:00 - 10:00'; 
 
-    if (lastRow && lastRow.timeDuration.includes('-')) {
-      const parts = lastRow.timeDuration.split('-').map(t => t.trim());
-      const lastEndTime = parts[1];
-
-      if (lastEndTime) {
-        const [hours, minutes] = lastEndTime.split(':').map(Number);
-        const newStart = lastEndTime;
-        const newEndHours = (hours + 1).toString().padStart(2, '0');
-        const newEnd = `${newEndHours}:${minutes.toString().padStart(2, '0')}`;
-        nextDuration = `${newStart} - ${newEnd}`;
-      }
+    if (lastRow) {
+       const currentIndex = TIME_SLOTS.indexOf(lastRow.timeDuration);
+       if (currentIndex !== -1 && currentIndex < TIME_SLOTS.length - 1) {
+           nextDuration = TIME_SLOTS[currentIndex + 1];
+       } else if (lastRow.timeDuration.includes('-')) {
+           // Fallback manual increment if custom time was typed
+           const parts = lastRow.timeDuration.split('-').map(t => t.trim());
+           const lastEndTime = parts[1];
+           if (lastEndTime) {
+               const [hours, minutes] = lastEndTime.split(':').map(Number);
+               const newStart = lastEndTime;
+               const newEndHours = (hours + 1).toString().padStart(2, '0');
+               const newEnd = `${newEndHours}:${minutes.toString().padStart(2, '0')}`;
+               nextDuration = `${newStart} - ${newEnd}`;
+           }
+       }
     }
 
     let defaultPlannedDt = 0;
@@ -164,7 +211,7 @@ function AddProductionSection({ initialDate, onClose, onSuccess }: { initialDate
     }
 
     setRows([...rows, { 
-      timeDuration: nextDuration, modelName: '', 
+      timeDuration: nextDuration, modelName: '', items: [{ model: '', quantity: 0 }],
       plannedMp: 1, actualMp: 1, totalAvailTime: 60, 
       plannedDt: defaultPlannedDt, unplannedDt: 0, 
       targetOutput: 0, actualOutput: 0, goodOutput: 0, remarks: defaultRemarks 
@@ -180,6 +227,22 @@ function AddProductionSection({ initialDate, onClose, onSuccess }: { initialDate
        newRows[index].goodOutput = value;
     }
     setRows(newRows);
+  };
+
+  // Dedicated function for updating items to ensure actualOutput stays synced
+  const updateItems = (index: number, newItems: any[]) => {
+      const newRows = [...rows];
+      const newTotalOutput = newItems.reduce((sum, curr) => sum + (Number(curr.quantity) || 0), 0);
+      
+      newRows[index].items = newItems;
+      newRows[index].actualOutput = newTotalOutput;
+      
+      // Auto update goodOutput if it was 0 or matching the old actualOutput
+      if (newRows[index].goodOutput === 0 || newRows[index].goodOutput === rows[index].actualOutput) {
+          newRows[index].goodOutput = newTotalOutput;
+      }
+      
+      setRows(newRows);
   };
 
   const parseExcelClipboard = (text: string): string[][] => {
@@ -213,7 +276,7 @@ function AddProductionSection({ initialDate, onClose, onSuccess }: { initialDate
     return rows;
   };
 
-  const handlePaste = (e: React.ClipboardEvent<HTMLInputElement | HTMLTextAreaElement>, rowIndex: number, colKey: keyof NewProductionRow) => {
+  const handlePaste = (e: React.ClipboardEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>, rowIndex: number, colKey: keyof NewProductionRow) => {
     e.preventDefault();
     const pasteData = e.clipboardData.getData('text');
     const parsedRows = parseExcelClipboard(pasteData);
@@ -234,25 +297,85 @@ function AddProductionSection({ initialDate, onClose, onSuccess }: { initialDate
       const currentRowIndex = rowIndex + i;
       if (!newRows[currentRowIndex]) {
         newRows[currentRowIndex] = { 
-          timeDuration: '', modelName: '', plannedMp: 1, actualMp: 1, 
+          timeDuration: '', modelName: '', items: [{ model: '', quantity: 0 }], plannedMp: 1, actualMp: 1, 
           totalAvailTime: 60, plannedDt: 0, unplannedDt: 0, 
           targetOutput: 0, actualOutput: 0, goodOutput: 0, remarks: '' 
         };
       }
+
       cellValues.forEach((cellValue, j) => {
         const currentField = excelColumnMap[startColIndex + j];
         if (currentField && currentField !== 'SKIP') {
           let cleanValue: string | number = cellValue.trim();
-          if (cleanValue.startsWith('"') && cleanValue.endsWith('"')) {
+          if (typeof cleanValue === 'string' && cleanValue.startsWith('"') && cleanValue.endsWith('"')) {
              cleanValue = cleanValue.substring(1, cleanValue.length - 1).replace(/""/g, '"');
           }
+
+          let isFormulaOutput = false;
+          let formulaParts: number[] = [];
+
+          // Format numbers and remarks
           if (['plannedMp', 'actualMp', 'totalAvailTime', 'plannedDt', 'unplannedDt', 'targetOutput', 'actualOutput', 'goodOutput'].includes(currentField)) {
-            cleanValue = cleanValue === '' ? 0 : Number(String(cleanValue).replace(/,/g, '')) || 0;
+            // Check if actual output is copied as a math formula like "=12+2+3" or "12+2+3"
+            if (currentField === 'actualOutput' && (String(cleanValue).startsWith('=') || String(cleanValue).includes('+'))) {
+               let expr = String(cleanValue).replace(/^=/, '');
+               formulaParts = expr.split('+').map(p => Number(p.trim().replace(/,/g, '')) || 0);
+               cleanValue = formulaParts.reduce((a, b) => a + b, 0);
+               isFormulaOutput = true;
+            } else {
+               cleanValue = cleanValue === '' ? 0 : Number(String(cleanValue).replace(/,/g, '')) || 0;
+            }
+          } else if (currentField === 'remarks') {
+            cleanValue = formatRemarks(String(cleanValue)); 
           }
-          newRows[currentRowIndex] = { ...newRows[currentRowIndex], [currentField]: cleanValue };
+
+          // Special logic for Model Name to handle line breaks mapping to separate items
+          if (currentField === 'modelName') {
+            const models = String(cleanValue).split('\n').map(m => m.trim()).filter(m => m);
+            if (models.length > 0) {
+               const currentItems = newRows[currentRowIndex].items || [{model: '', quantity: 0}];
+               newRows[currentRowIndex].items = models.map((m, idx) => ({
+                   model: m,
+                   quantity: currentItems[idx] ? currentItems[idx].quantity : 0
+               }));
+            }
+            newRows[currentRowIndex].modelName = String(cleanValue);
+          } 
+          // Auto assign actual output to fallback defaults, and distribute formula parts to models
+          else if (currentField === 'actualOutput') {
+            const val = cleanValue as number;
+            newRows[currentRowIndex].actualOutput = val;
+            if (newRows[currentRowIndex].goodOutput === 0) {
+               newRows[currentRowIndex].goodOutput = val;
+            }
+            
+            // If the copied value was a formula (e.g. "=12+2+3"), assign those values perfectly to the items
+            if (isFormulaOutput && formulaParts.length > 0) {
+               const currentItems = newRows[currentRowIndex].items || [{model: '', quantity: 0}];
+               const maxLen = Math.max(currentItems.length, formulaParts.length);
+               const newItems = [];
+               for(let k = 0; k < maxLen; k++) {
+                  newItems.push({
+                     model: currentItems[k] ? currentItems[k].model : '',
+                     quantity: formulaParts[k] !== undefined ? formulaParts[k] : (currentItems[k] ? currentItems[k].quantity : 0)
+                  });
+               }
+               newRows[currentRowIndex].items = newItems;
+            }
+          } 
+          // Standard mapping
+          else {
+            newRows[currentRowIndex][currentField as keyof NewProductionRow] = cleanValue as never;
+          }
         }
       });
+
+      // After parsing the row, ensure actualOutput is distributed to item quantity if only 1 item exists
+      if (newRows[currentRowIndex].items && newRows[currentRowIndex].items.length === 1) {
+          newRows[currentRowIndex].items[0].quantity = newRows[currentRowIndex].actualOutput;
+      }
     });
+    
     setRows(newRows);
   };
 
@@ -261,7 +384,7 @@ function AddProductionSection({ initialDate, onClose, onSuccess }: { initialDate
     setIsSaving(true);
 
     const recordsToSave = rows
-      .filter(row => row.modelName || row.actualOutput > 0) 
+      .filter(row => row.modelName || (row.items && row.items[0].model) || row.actualOutput > 0) 
       .map(row => {
         let decimalHour = 0;
         const timeMatches = row.timeDuration.match(/(\d{1,2}):(\d{2})/g); 
@@ -272,6 +395,14 @@ function AddProductionSection({ initialDate, onClose, onSuccess }: { initialDate
         } else if (timeMatches && timeMatches.length === 1) {
            const matchParts = timeMatches[0].split(':');
            decimalHour = parseInt(matchParts[0], 10) + (parseInt(matchParts[1], 10) / 60);
+        }
+
+        // Use the detailed items array if populated, otherwise fallback to the single modelName field
+        let saveItems = [];
+        if (row.items && row.items.length > 0 && row.items[0].model !== '') {
+            saveItems = row.items;
+        } else if (row.modelName) {
+            saveItems = [{ model: row.modelName, quantity: row.actualOutput }];
         }
 
         return {
@@ -287,13 +418,13 @@ function AddProductionSection({ initialDate, onClose, onSuccess }: { initialDate
           unplan_dt: row.unplannedDt,
           defect_qty: row.actualOutput - row.goodOutput,
           remarks: row.remarks,
-          item: [{ model: row.modelName, quantity: row.actualOutput }]
+          item: saveItems
         };
       });
 
     if (recordsToSave.length === 0) {
       setIsSaving(false);
-      return alert("No data to save.");
+      return alert("No data to save. Please enter a model name.");
     }
 
     const { error } = await supabase.from('production_records').insert(recordsToSave);
@@ -355,7 +486,7 @@ function AddProductionSection({ initialDate, onClose, onSuccess }: { initialDate
             <tr>
               <th className="border-[0.5px] border-white/30 px-2 py-3 w-10 text-center text-[10px] whitespace-normal leading-tight font-bold">SL.No</th>
               <th className="border-[0.5px] border-white/30 px-2 py-3 min-w-[120px] text-[10px] whitespace-normal leading-tight font-bold text-center">Time Duration</th>
-              <th className="border-[0.5px] border-white/30 px-2 py-3 min-w-[150px] text-[10px] whitespace-normal leading-tight font-bold text-left">Model Name</th>
+              <th className="border-[0.5px] border-white/30 px-2 py-3 min-w-[200px] text-[10px] whitespace-normal leading-tight font-bold text-left">Model Name</th>
               <th className="border-[0.5px] border-white/30 px-2 py-3 w-16 text-[10px] whitespace-normal leading-tight font-bold text-center">Planned Manpower</th>
               <th className="border-[0.5px] border-white/30 px-2 py-3 w-16 text-[10px] whitespace-normal leading-tight font-bold text-center">Actual Manpower</th>
               <th className="border-[0.5px] border-white/30 px-2 py-3 w-20 text-[10px] whitespace-normal leading-tight font-bold text-center">Total Available Time (min)</th>
@@ -386,12 +517,83 @@ function AddProductionSection({ initialDate, onClose, onSuccess }: { initialDate
               return (
                 <tr key={index} className={`group hover:bg-slate-50 ${index % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}`}>
                   <td className="border border-slate-300 text-center font-semibold text-slate-500">{index + 1}</td>
-                  <td className="border border-slate-300 p-0 h-10">
-                    <input type="text" value={row.timeDuration} onChange={e => updateRow(index, 'timeDuration', e.target.value)} onPaste={(e) => handlePaste(e, index, 'timeDuration')} className={`${inputClass} font-mono text-center`} />
+                  
+                  {/* SELECTABLE & EDITABLE TIME DURATION COMBOBOX */}
+                  <td className="border border-slate-300 p-0 h-10 relative">
+                    <input 
+                      type="text" 
+                      list={`time-slots-${index}`}
+                      value={row.timeDuration} 
+                      onChange={e => updateRow(index, 'timeDuration', e.target.value)} 
+                      onPaste={(e) => handlePaste(e, index, 'timeDuration')} 
+                      className={`${inputClass} font-mono text-center cursor-text`} 
+                      placeholder="HH:MM - HH:MM"
+                    />
+                    <datalist id={`time-slots-${index}`}>
+                      {TIME_SLOTS.map(slot => (
+                        <option key={slot} value={slot} />
+                      ))}
+                    </datalist>
                   </td>
-                  <td className="border border-slate-300 p-0 h-auto">
-                    <textarea value={row.modelName} onChange={e => updateRow(index, 'modelName', e.target.value)} onPaste={(e) => handlePaste(e, index, 'modelName')} className={`${inputClass} resize-none overflow-hidden leading-tight pt-2.5 min-h-[40px]`} rows={1} style={{ height: '100%', whiteSpace: 'pre-wrap' }} placeholder="Model Name" />
+                  
+                  {/* MULTI-ITEM MODEL INPUT (SUMS ACTUAL OUTPUT) */}
+                  <td className="border border-slate-300 p-1 h-auto min-w-[200px] align-top">
+                    <div className="flex flex-col gap-1 w-full">
+                      {row.items.map((item, idx) => (
+                        <div key={idx} className="flex gap-1 items-center w-full">
+                          <input 
+                            type="text" 
+                            className="flex-1 min-w-[80px] border border-blue-400 rounded px-1.5 py-1 outline-none text-[11px]" 
+                            value={item.model} 
+                            onChange={(e) => {
+                              const newItems = [...row.items];
+                              newItems[idx].model = e.target.value;
+                              updateItems(index, newItems);
+                            }} 
+                            onPaste={(e) => handlePaste(e, index, 'modelName')}
+                            placeholder="Model Name"
+                          />
+                          <input 
+                            type="text" 
+                            className="w-12 border border-blue-400 rounded text-center px-1 py-1 outline-none text-[11px] font-bold text-blue-700" 
+                            value={item.quantity === 0 ? '' : item.quantity} 
+                            onChange={(e) => {
+                              const val = e.target.value.replace(/[^0-9]/g, '');
+                              const numVal = val === '' ? 0 : parseInt(val, 10);
+                              
+                              const newItems = [...row.items];
+                              newItems[idx].quantity = numVal;
+                              
+                              updateItems(index, newItems);
+                            }} 
+                            placeholder="Qty"
+                            title="This quantity adds to the Actual Output"
+                          />
+                          {idx === 0 ? (
+                            <button 
+                              onClick={() => updateItems(index, [...row.items, { model: '', quantity: 0 }])} 
+                              className="p-1 bg-blue-50 text-blue-600 rounded hover:bg-blue-100 transition-colors" 
+                              title="Add Model"
+                            >
+                              <Plus size={14} />
+                            </button>
+                          ) : (
+                            <button 
+                              onClick={() => {
+                                const newItems = row.items.filter((_, i) => i !== idx);
+                                updateItems(index, newItems);
+                              }} 
+                              className="p-1 bg-red-50 text-red-600 rounded hover:bg-red-100 transition-colors" 
+                              title="Remove Model"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
                   </td>
+
                   <td className="border border-slate-300 p-0 h-10">
                     <input type="number" value={row.plannedMp} onChange={e => updateRow(index, 'plannedMp', parseInt(e.target.value))} onPaste={(e) => handlePaste(e, index, 'plannedMp')} className={numInputClass} />
                   </td>
@@ -414,8 +616,8 @@ function AddProductionSection({ initialDate, onClose, onSuccess }: { initialDate
                   <td className="border border-slate-300 p-0 h-10">
                     <input type="number" value={row.targetOutput} onChange={e => updateRow(index, 'targetOutput', parseInt(e.target.value))} onPaste={(e) => handlePaste(e, index, 'targetOutput')} className={numInputClass} />
                   </td>
-                  <td className="border border-slate-300 p-0 h-10">
-                    <input type="number" value={row.actualOutput} onChange={e => updateRow(index, 'actualOutput', parseInt(e.target.value))} onPaste={(e) => handlePaste(e, index, 'actualOutput')} className={`${numInputClass} font-bold`} />
+                  <td className="border border-slate-300 p-0 h-10 bg-blue-50/50">
+                    <input type="number" value={row.actualOutput} onChange={e => updateRow(index, 'actualOutput', parseInt(e.target.value))} onPaste={(e) => handlePaste(e, index, 'actualOutput')} className={`${numInputClass} font-bold text-blue-800`} title="Sum of Model Quantities" />
                   </td>
                   <td className={cellClass} style={getPercentageStyle(pctEff)}>{pctEff.toFixed(1)}%</td>
                   <td className="border border-slate-300 p-0 h-10">
@@ -423,7 +625,16 @@ function AddProductionSection({ initialDate, onClose, onSuccess }: { initialDate
                   </td>
                   <td className={cellClass} style={getPercentageStyle(pctQual)}>{pctQual.toFixed(1)}%</td>
                   <td className="border border-slate-300 p-0 h-auto">
-                    <textarea value={row.remarks} onChange={e => updateRow(index, 'remarks', e.target.value)} onPaste={(e) => handlePaste(e, index, 'remarks')} className={`${inputClass} resize-y overflow-auto leading-tight pt-2 min-h-[56px]`} rows={2} style={{ height: '100%', whiteSpace: 'pre-wrap' }} placeholder="Remarks..." />
+                    <textarea 
+                      value={row.remarks} 
+                      onChange={e => updateRow(index, 'remarks', formatRemarks(e.target.value))} 
+                      onPaste={(e) => handlePaste(e, index, 'remarks')} 
+                      className={`${inputClass} resize-y overflow-auto leading-tight pt-2 min-h-[56px]`} 
+                      rows={2} style={{ height: '100%', whiteSpace: 'pre-wrap' }} 
+                      placeholder="Remarks..." 
+                      spellCheck={true}
+                      autoCorrect="on"
+                    />
                   </td>
                   <td className="border border-slate-300 p-0 text-center h-10 bg-white">
                     <button onClick={() => removeRow(index)} className="w-full h-full flex items-center justify-center text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors" tabIndex={-1}>
@@ -457,8 +668,9 @@ function AddProductionSection({ initialDate, onClose, onSuccess }: { initialDate
 // ============================================================================
 // MAIN VIEW UTILIZATION COMPONENT
 // ============================================================================
-export default function ViewUtilizationReport() {
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+
+// Component now accepts selectedDate as a prop
+export default function ViewUtilizationReport({ selectedDate }: ViewUtilizationReportProps) {
   const [activeTab, setActiveTab] = useState(ALL_TEAMS[0]); 
   const [rows, setRows] = useState<ProductionRow[]>([]);
   const [loading, setLoading] = useState(false);
@@ -468,7 +680,7 @@ export default function ViewUtilizationReport() {
 
   const [editingRowId, setEditingRowId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState({ 
-    actualMp: 0, plannedDt: 0, unplannedDt: 0, targetOutput: 0, actualOutput: 0, goodOutput: 0, remarks: '', items: [] as any[]
+    timeDuration: '', actualMp: 0, plannedDt: 0, unplannedDt: 0, targetOutput: 0, actualOutput: 0, goodOutput: 0, remarks: '', items: [] as any[]
   });
 
   const fetchReportData = async () => {
@@ -505,7 +717,8 @@ export default function ViewUtilizationReport() {
         targetOutput: record.target_units || 0,
         actualOutput: record.units_produced || 0,
         goodOutput: (record.units_produced || 0) - defects,
-        remarks: record.remarks || ''
+        // Enforce Proper Case format for remarks on load
+        remarks: record.remarks ? formatRemarks(record.remarks) : ''
       };
     });
 
@@ -528,6 +741,7 @@ export default function ViewUtilizationReport() {
         : [{ model: '', quantity: 0 }];
 
       setEditForm({
+        timeDuration: row.timeDuration,
         actualMp: row.actualMp, plannedDt: row.plannedDt, unplannedDt: row.unplannedDt,
         targetOutput: row.targetOutput, actualOutput: row.actualOutput, goodOutput: row.goodOutput, remarks: row.remarks,
         items: initialItems
@@ -548,9 +762,21 @@ export default function ViewUtilizationReport() {
 
   const handleSaveEdit = async () => {
     try {
+      let decimalHour = 0;
+      const timeMatches = editForm.timeDuration.match(/(\d{1,2}):(\d{2})/g); 
+      
+      if (timeMatches && timeMatches.length >= 2) {
+          const endParts = timeMatches[1].split(':');
+          decimalHour = parseInt(endParts[0], 10) + (parseInt(endParts[1], 10) / 60);
+      } else if (timeMatches && timeMatches.length === 1) {
+          const matchParts = timeMatches[0].split(':');
+          decimalHour = parseInt(matchParts[0], 10) + (parseInt(matchParts[1], 10) / 60);
+      }
+
       const { error } = await supabase
         .from('production_records')
         .update({
+          hour: decimalHour || undefined, // Allow updating hour if edited correctly
           manpower: editForm.actualMp, 
           target_units: editForm.targetOutput,
           units_produced: editForm.actualOutput, 
@@ -632,7 +858,7 @@ export default function ViewUtilizationReport() {
 
       switch(colIndex) {
         case 0: return index + 1;
-        case 1: return row.timeDuration;
+        case 1: return isEditing ? editForm.timeDuration : row.timeDuration;
         case 2: return formatForExcel(row.modelName || '-'); 
         case 3: return row.plannedMp;
         case 4: return isEditing ? editForm.actualMp : row.actualMp;
@@ -813,21 +1039,75 @@ export default function ViewUtilizationReport() {
   const cellClass = "border border-slate-300 px-2 py-2 h-10 text-slate-700 text-center";
   const numCellClass = `${cellClass} font-mono`;
   const preWrapCellClass = `${cellClass} whitespace-pre-wrap`;
+  
+  // --- ADDED THIS LINE HERE TO FIX THE WHITE SCREEN CRASH ---
+  const inputClass = "w-full h-full px-2 py-2 bg-transparent outline-none focus:bg-blue-50 focus:ring-2 focus:ring-inset focus:ring-blue-500 transition-all text-xs";
 
-  const renderTh = (index: number, title: string, widthClass: string, colorClass = '', alignClass = 'text-center', justifyClass = 'justify-center') => (
-    <th key={index} className={`border-[0.5px] border-slate-400 px-2 py-3 ${widthClass} text-[10px] whitespace-normal leading-tight font-bold ${alignClass} ${colorClass} group relative hover:bg-[#254abf] transition-colors`}>
-      <div className={`flex items-center ${justifyClass} gap-1.5`}>
-        <span>{title}</span>
-        <button 
-          onClick={() => handleCopyColumn(index, title.split('\n')[0])} 
-          className="p-1 hover:bg-blue-400 bg-blue-600/80 rounded opacity-0 group-hover:opacity-100 transition-opacity text-white shrink-0 shadow-sm" 
-          title={`Copy ${title.split('\n')[0]} column`}
-        >
-          <Copy size={12} />
-        </button>
-      </div>
-    </th>
-  );
+
+  const renderTh = (
+  index: number,
+  title: string,
+  widthClass: string,
+  colorClass = '',
+  alignClass = 'text-center',
+  justifyClass = 'justify-center'
+) => (
+  <th
+    key={index}
+    className={`
+      border-[0.5px] border-slate-400
+      px-2 py-3
+      ${widthClass}
+      text-[10px]
+      whitespace-normal
+      leading-tight
+      font-bold
+      ${alignClass}
+      ${colorClass}
+      group relative
+      hover:bg-[#254abf]
+      transition-colors
+      align-middle
+    `}
+  >
+    <div
+      className={`
+        flex
+        items-center
+        justify-center
+        text-center
+        gap-1.5
+        w-full
+        h-full
+      `}
+    >
+      <span className="flex-1 text-center">
+        {title}
+      </span>
+
+      <button
+        onClick={() =>
+          handleCopyColumn(index, title.split('\n')[0])
+        }
+        className="
+          p-1
+          hover:bg-blue-400
+          bg-blue-600/80
+          rounded
+          opacity-0
+          group-hover:opacity-100
+          transition-opacity
+          text-white
+          shrink-0
+          shadow-sm
+        "
+        title={`Copy ${title.split('\n')[0]} column`}
+      >
+        <Copy size={12} />
+      </button>
+    </div>
+  </th>
+);
 
   return (
     <div className="max-w-[100vw] mx-auto p-4 md:p-6 bg-slate-50 min-h-screen font-sans">
@@ -846,15 +1126,8 @@ export default function ViewUtilizationReport() {
           </div>
 
           <div className="flex flex-col md:flex-row gap-4 w-full md:w-auto">
-            <div className="flex items-center bg-blue-800 border border-blue-600 rounded-lg px-3 py-2 shadow-inner">
-              <Calendar size={16} className="text-blue-300 mr-2" />
-              <input 
-                type="date" 
-                value={selectedDate} 
-                onChange={(e) => setSelectedDate(e.target.value)}
-                className="bg-transparent text-sm text-white outline-none cursor-pointer [color-scheme:dark]"
-              />
-            </div>
+            {/* The date picker input has been completely removed from here */}
+            {/* It now relies solely on the selectedDate prop passed from the Dashboard */}
 
             {/* TOGGLE ADD RECORD FORM */}
             <button 
@@ -930,7 +1203,7 @@ export default function ViewUtilizationReport() {
               <tr>
                 {renderTh(0, 'SL.No', 'w-10')}
                 {renderTh(1, 'Time Duration', 'w-48')}
-                {renderTh(2, 'Model Name', 'min-w-[200px]', '', 'text-left', 'justify-start')}
+                {renderTh(2, 'Model Name', 'min-w-[200px]')}
                 {renderTh(3, 'Planned Manpower', 'w-16')}
                 {renderTh(4, 'Actual Manpower', 'w-16')}
                 {renderTh(5, 'Total Available Time (min)', 'w-20')}
@@ -945,7 +1218,7 @@ export default function ViewUtilizationReport() {
                 {renderTh(14, 'Efficiency(%)', 'w-32', 'text-blue-200')}
                 {renderTh(15, 'Good Output(Qty)', 'w-20')}
                 {renderTh(16, 'Quality (FPY) %', 'w-32', 'text-blue-200')}
-                {renderTh(17, 'Remarks', 'min-w-[250px]', '', 'text-left', 'justify-start')}
+                {renderTh(17, 'Remarks', 'min-w-[250px]')}
                 <th className="border-[0.5px] border-slate-400 px-2 py-3 w-10 select-none"></th>
               </tr>
             </thead>
@@ -971,7 +1244,7 @@ export default function ViewUtilizationReport() {
                 const modelsContent = row.items && row.items.length > 0
                   ? row.items.map((m, idx, arr) => (
                       <span key={idx}>
-                        {m.model}
+                        {m.model} <span className="text-slate-400 text-[10px]">({m.quantity || 0})</span>
                         {idx < arr.length - 1 && <br />}
                       </span>
                     ))
@@ -989,7 +1262,29 @@ export default function ViewUtilizationReport() {
                 return (
                   <tr key={row.id} className={`hover:bg-blue-50/50 transition-colors ${index % 2 === 0 ? 'bg-white' : 'bg-slate-50'}`}>
                     <td className={`${numCellClass} text-slate-500 font-bold`}>{index + 1}</td>
-                    <td className={`${numCellClass} font-semibold`}>{row.timeDuration}</td>
+                    
+                    {/* EDITABLE/SELECTABLE TIME DURATION IN UTILIZATION REPORT VIEW */}
+                    <td className="border border-slate-300 p-0 h-10 relative">
+                      {isEditing ? (
+                        <>
+                          <input 
+                            type="text" 
+                            list={`edit-time-slots-${index}`}
+                            value={editForm.timeDuration} 
+                            onChange={e => setEditForm({...editForm, timeDuration: e.target.value})} 
+                            className={`${inputClass} font-mono text-center cursor-text`} 
+                            placeholder="HH:MM - HH:MM"
+                          />
+                          <datalist id={`edit-time-slots-${index}`}>
+                            {TIME_SLOTS.map(slot => (
+                              <option key={slot} value={slot} />
+                            ))}
+                          </datalist>
+                        </>
+                      ) : (
+                        <span className="font-semibold px-2">{row.timeDuration}</span>
+                      )}
+                    </td>
                     
                     <td className={`${preWrapCellClass} font-medium align-top`} style={{ whiteSpace: 'pre-wrap' }}>
                       {isEditing ? (
@@ -1005,7 +1300,7 @@ export default function ViewUtilizationReport() {
                                   newItems[idx].model = e.target.value;
                                   setEditForm({...editForm, items: newItems});
                                 }} 
-                                placeholder="Model"
+                                placeholder="Model Name"
                               />
                               <input 
                                 type="text" 
@@ -1110,7 +1405,13 @@ export default function ViewUtilizationReport() {
                     
                     <td className={`${preWrapCellClass} text-[11px]`} style={{ whiteSpace: 'pre-wrap' }}>
                       {isEditing ? (
-                        <textarea className="w-full min-h-[40px] border border-blue-400 rounded p-1 outline-none resize-none text-center" value={editForm.remarks} onChange={(e) => setEditForm({...editForm, remarks: e.target.value})} />
+                        <textarea 
+                          className="w-full min-h-[40px] border border-blue-400 rounded p-1 outline-none resize-none text-center" 
+                          value={editForm.remarks} 
+                          onChange={(e) => setEditForm({...editForm, remarks: formatRemarks(e.target.value)})} 
+                          spellCheck={true}
+                          autoCorrect="on"
+                        />
                       ) : remarksContent}
                     </td>
 

@@ -2,14 +2,36 @@ import { useState, useEffect, useCallback } from 'react';
 import { X, Save, Copy, EyeOff, Eye } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
-const formatETA = (dateString: string | null | undefined) => {
-  if (!dateString) return '-';
-  const d = new Date(dateString);
-  if (isNaN(d.getTime())) return '-';
-  const day = d.getDate().toString().padStart(2, '0');
-  const month = d.toLocaleString('en-GB', { month: 'short' });
-  const year = d.getFullYear();
-  return `${day}-${month}-${year}`; 
+const formatETA = (
+  eta: string | null | undefined,
+  remark?: string
+) => {
+  const normalizedRemark = (remark || '').toLowerCase();
+
+  // Show ETA only when remark contains "shortage"
+  if (!normalizedRemark.includes('shortage')) {
+    return '-';
+  }
+
+  // If ETA is empty and shortage exists
+  if (!eta) return 'TBA';
+
+  // If user manually typed TBA
+  if (eta.toUpperCase() === 'TBA') return 'TBA';
+
+  // Format valid date
+  const d = new Date(eta);
+
+  if (!isNaN(d.getTime())) {
+    const day = d.getDate().toString().padStart(2, '0');
+    const month = d.toLocaleString('en-GB', { month: 'short' });
+    const year = d.getFullYear();
+
+    return `${day}-${month}-${year}`;
+  }
+
+  // fallback
+  return eta;
 };
 
 interface HourlyProductionSheetProps {
@@ -80,9 +102,16 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
         const teamAssigned = planObj?.team || actualTeamMap[model] || '';
         
         let derivedCategory = itemObj?.item_group || 'SFG'; 
-        const teamLower = teamAssigned.toLowerCase();
-        if (teamLower.includes('panel')) derivedCategory = 'Panel';
-        else if (teamLower.includes('accessories')) derivedCategory = 'Accessories';
+        
+        // --- FIXED LOGIC: Trading overrides everything else ---
+        if (itemObj?.item_group === 'FINISHED GOOD TRDG') {
+          derivedCategory = 'Trading';
+        } else {
+          // Only check team names if it's NOT Trading
+          const teamLower = teamAssigned.toLowerCase();
+          if (teamLower.includes('panel')) derivedCategory = 'Panel';
+          else if (teamLower.includes('accessories')) derivedCategory = 'Accessories';
+        }
 
         let defaultRemark = planObj?.remarks || '';
         if (!defaultRemark) {
@@ -105,12 +134,21 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
         };
       });
 
-      const catOrder: Record<string, number> = { 'Panel': 1, 'Accessories': 2 };
-      const getCatWeight = (cat: string) => catOrder[cat] || 3;
+      const catOrder: Record<string, number> = { 'Panel': 1, 'Accessories': 2, 'Trading': 3 };
+      const getCatWeight = (cat: string) => catOrder[cat] || 4;
 
       summaryRows.sort((a, b) => {
+        // First sort by team
+        const teamA = a.team || 'Unassigned';
+        const teamB = b.team || 'Unassigned';
+        const teamDiff = teamA.localeCompare(teamB);
+        if (teamDiff !== 0) return teamDiff;
+
+        // Then by category
         const diff = getCatWeight(a.category) - getCatWeight(b.category);
         if (diff !== 0) return diff;
+        
+        // Finally by model name
         return a.model_name.localeCompare(b.model_name);
       });
 
@@ -178,7 +216,7 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
     // EXCLUDE hidden rows for copy
     const visibleData = summaryData.filter(row => !hiddenModels.has(row.model_name));
     
-    const headers = ["Date", "S.no", "FG part number", "Model Name", "Category", "Plan", "Actual", "Remark", "ETA"];
+    const headers = ["Team", "S.no", "FG part number", "Model Name", "Category", "Plan", "Actual", "Remark", "ETA"];
     
     let html = `<table border="1" style="border-collapse: collapse; font-family: Calibri, sans-serif; font-size: 11pt;">`;
     html += `<thead><tr>`;
@@ -188,14 +226,22 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
     html += `</tr></thead><tbody>`;
 
     // Process visible rows to HTML
+    let currentTeam: string | null = null;
+
     visibleData.forEach((row, idx) => {
       html += `<tr>`;
       
       // Date Column (Merged)
-      if (idx === 0) {
-        html += `<td rowspan="${visibleData.length}" style="text-align: center; vertical-align: middle; border: 1px solid #d1d5db; background-color: #f3f4f6; font-weight: bold;">${row.date}</td>`;
-      }
+     
       
+      // Team Column (Merged)
+      const t = row.team || 'Unassigned';
+      if (t !== currentTeam) {
+        const teamCount = visibleData.filter(r => (r.team || 'Unassigned') === t).length;
+        html += `<td rowspan="${teamCount}" style="text-align: center; vertical-align: middle; border: 1px solid #d1d5db; background-color: #eef2ff; font-weight: bold;">${t}</td>`;
+        currentTeam = t;
+      }
+
       // Data Columns
       html += `<td style="text-align: center; vertical-align: middle; border: 1px solid #d1d5db; background-color: #f3f4f6;">${idx + 1}</td>`;
       html += `<td style="text-align: left; vertical-align: middle; border: 1px solid #d1d5db;">${row.fg_part_number}</td>`;
@@ -220,10 +266,13 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
     }
   };
 
-  const autoResizeTextarea = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    e.target.style.height = 'auto';
-    e.target.style.height = `${e.target.scrollHeight}px`;
-  };
+  const autoResizeTextarea = (
+  e: React.ChangeEvent<HTMLTextAreaElement>
+) => {
+  const textarea = e.target;
+  textarea.style.height = 'auto';
+  textarea.style.height = textarea.scrollHeight + 'px';
+};
 
   if (loading) return (
     <div className="flex justify-center p-12 items-center space-x-2 text-slate-500 font-medium">
@@ -232,14 +281,31 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
     </div>
   );
 
-  // Pre-calculate visible variables for the Date Rowspan and Sno
+  // Pre-calculate visible variables for the Date Rowspan, Team Rowspan, and Sno
   const visibleCount = showHiddenRows ? summaryData.length : summaryData.filter(r => !hiddenModels.has(r.model_name)).length;
   const firstVisibleIdx = summaryData.findIndex(r => showHiddenRows || !hiddenModels.has(r.model_name));
   
+  // Calculate spans for teams
+  const teamVisibleCounts: Record<string, number> = {};
+  const teamFirstVisibleIdx: Record<string, number> = {};
+
+  summaryData.forEach((row, idx) => {
+    const isVisible = showHiddenRows || !hiddenModels.has(row.model_name);
+    if (isVisible) {
+      const t = row.team || 'Unassigned';
+      teamVisibleCounts[t] = (teamVisibleCounts[t] || 0) + 1;
+      if (teamFirstVisibleIdx[t] === undefined) {
+        teamFirstVisibleIdx[t] = idx;
+      }
+    }
+  });
+  
   let dynamicSno = 1;
+
 
   return (
     <div className="space-y-4 p-4 md:p-6 bg-slate-50 min-h-screen relative">
+
       
       {/* Action Bar */}
       <div className="flex flex-wrap items-center justify-between gap-4 mb-4 relative z-10">
@@ -263,13 +329,22 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
             )}
         </div>
       </div>
+<div className="flex items-center justify-between px-4 py-3 bg-slate-100 border-b border-gray-300">
+  <h2 className="text-lg font-bold text-slate-800">
+    Daily Production Summary
+  </h2>
+
+  <div className="px-4 py-2 bg-[#70ad47] text-white rounded-lg font-bold shadow-sm">
+    Date: {summaryData[0]?.date || '-'}
+  </div>
+</div>
 
       {/* --- EXCEL STYLE SUMMARY TABLE --- */}
       <div className="bg-white shadow-md border border-gray-300 overflow-x-auto relative">
-        <table className="w-full border-collapse" style={{ fontFamily: 'Calibri, sans-serif' }}>
+        <table className="w-full min-w-[1200px] border-collapse" style={{ fontFamily: 'Calibri, sans-serif' }}>
           <thead>
-            <tr className="bg-[#70ad47] text-white">
-              <th className="px-3 py-2 text-center align-middle text-sm font-bold border border-gray-300 w-[100px]">Date</th>
+            <tr className="bg-[#70ad47] text-white whitespace-nowrap">
+              <th className="px-3 py-2 text-center align-middle text-sm font-bold border border-gray-300 w-[120px]">Team</th>
               <th className="px-3 py-2 text-center align-middle text-sm font-bold border border-gray-300 w-[60px]">S.no</th>
               <th className="px-3 py-2 text-center align-middle text-sm font-bold border border-gray-300">FG part number</th>
               <th className="px-3 py-2 text-center align-middle text-sm font-bold border border-gray-300">Model Name</th>
@@ -278,12 +353,12 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
               <th className="px-3 py-2 text-center align-middle text-sm font-bold border border-gray-300 w-[80px]">Actual</th>
               <th className="px-3 py-2 text-center align-middle text-sm font-bold border border-gray-300 min-w-[200px]">Remark</th>
               <th className="px-3 py-2 text-center align-middle text-sm font-bold border border-gray-300 w-[140px]">ETA</th>
-              <th className="px-2 py-2 text-center align-middle text-sm font-bold border border-gray-300 w-[40px] select-none" title="Hide Row">👁️</th>
+              <th className="px-2 py-2 text-center align-middle text-sm font-bold border border-gray-300 w-[40px] select-none" title="Hide Row">Hide</th>
             </tr>
           </thead>
           <tbody className="bg-white text-gray-800">
             {summaryData.length === 0 ? (
-              <tr><td colSpan={10} className="px-4 py-8 text-center text-gray-500 border border-gray-300">No data found.</td></tr>
+              <tr><td colSpan={11} className="px-4 py-8 text-center text-gray-500 border border-gray-300">No data found.</td></tr>
             ) : (
               summaryData.map((row, idx) => {
                 const isHidden = hiddenModels.has(row.model_name);
@@ -294,29 +369,36 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
                 // Calculate the visible Sno
                 const currentSno = isHidden ? '-' : dynamicSno++;
 
+                // Team Variables
+                const t = row.team || 'Unassigned';
+                const isFirstVisibleInTeam = teamFirstVisibleIdx[t] === idx;
+
                 return (
                   <tr key={idx} className={`transition-colors ${isHidden ? 'bg-gray-200/50 opacity-60 hover:bg-gray-200/70' : 'hover:bg-gray-50'}`}>
                     
                     {/* Date Column Merge */}
-                    {idx === firstVisibleIdx && (
+                   
+
+                    {/* Team Column Merge */}
+                    {isFirstVisibleInTeam && (
                       <td 
-                        rowSpan={visibleCount} 
-                        className="px-3 py-1.5 text-center text-sm border border-gray-300 bg-gray-100 font-bold whitespace-nowrap align-middle"
+                        rowSpan={teamVisibleCounts[t]} 
+                        className="px-3 py-1.5 text-center text-sm border border-gray-300 bg-indigo-50/50 text-indigo-900 font-bold whitespace-nowrap align-middle"
                       >
-                        {row.date}
+                        {t}
                       </td>
                     )}
                     
-                    <td className="px-3 py-1.5 text-center align-middle text-sm border border-gray-300 bg-gray-100 font-medium">
+                    <td className="px-3 py-1.5 text-center align-middle text-sm border border-gray-300 bg-gray-100 font-medium whitespace-nowrap">
                       {currentSno}
                     </td>
-                    <td className="px-3 py-1.5 text-left align-middle text-sm border border-gray-300">
+                    <td className="px-3 py-1.5 text-left align-middle text-sm border border-gray-300 whitespace-nowrap">
                       {row.fg_part_number}
                     </td>
-                    <td className="px-3 py-1.5 text-left align-middle text-sm border border-gray-300 font-medium">
+                    <td className="px-3 py-1.5 text-left align-middle text-sm border border-gray-300 font-medium whitespace-nowrap">
                       {row.model_name}
                     </td>
-                    <td className="px-3 py-1.5 text-left align-middle text-sm border border-gray-300">
+                    <td className="px-3 py-1.5 text-left align-middle text-sm border border-gray-300 whitespace-nowrap">
                       {row.category}
                     </td>
                     
@@ -330,58 +412,128 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
                       />
                     </td>
                     
-                    <td className="px-3 py-1.5 text-center align-middle text-sm border border-gray-300 font-bold">
+                    <td className="px-3 py-1.5 text-center align-middle text-sm border border-gray-300 font-bold whitespace-nowrap">
                       {row.actual}
                     </td>
                     
                     {/* Remarks Textarea */}
-                    <td className="p-0 border border-gray-300 align-middle">
-                      <textarea 
-                          value={row.remark} 
-                          onChange={(e) => {
-                            handleCellChange(idx, 'remark', e.target.value);
-                            autoResizeTextarea(e);
-                          }}
-                          onFocus={autoResizeTextarea}
-                          rows={Math.max(1, (row.remark || '').split('\n').length)}
-                          className="w-full min-h-[32px] px-3 py-1.5 text-left text-sm bg-transparent border-none focus:ring-2 focus:ring-[#70ad47] focus:bg-white outline-none m-0 resize-none overflow-hidden block align-middle leading-relaxed"
+                    <td className="p-0 border border-gray-300 align-top min-w-[220px] max-w-[320px]">
+                      <textarea
+                        value={row.remark}
+                        onChange={(e) => {
+                          handleCellChange(idx, 'remark', e.target.value);
+                          autoResizeTextarea(e);
+                        }}
+                        onFocus={autoResizeTextarea}
+                        rows={1}
+                        className="
+                          w-full
+                          px-3
+                          py-2
+                          text-left
+                          text-sm
+                          bg-transparent
+                          border-none
+                          outline-none
+                          resize-none
+                          overflow-hidden
+                          whitespace-pre-wrap
+                          break-words
+                          leading-relaxed
+                          min-h-[40px]
+                          focus:ring-2
+                          focus:ring-[#70ad47]
+                          focus:bg-white
+                          block
+                        "
+                        style={{
+                          height: 'auto',
+                        }}
+                        ref={(el) => {
+                          if (el) {
+                            el.style.height = 'auto';
+                            el.style.height = `${el.scrollHeight}px`;
+                          }
+                        }}
                       />
                     </td>
                     
-                    {/* ETA Date Picker */}
-                    <td 
-                       className="p-0 border border-gray-300 relative group cursor-pointer align-middle text-center" 
-                       onClick={() => setEditingEtaIdx(idx)}
-                    >
-                       {editingEtaIdx === idx ? (
-                           <input 
-                               type="date" 
-                               autoFocus
-                               value={row.eta || ''} 
-                               onChange={(e) => handleCellChange(idx, 'eta', e.target.value)}
-                               onBlur={() => setEditingEtaIdx(null)}
-                               className="w-full h-full min-h-[32px] px-2 py-1.5 text-center align-middle text-sm bg-transparent border-none focus:ring-2 focus:ring-[#70ad47] focus:bg-white outline-none"
-                           />
-                       ) : (
-                           <div className="w-full h-full min-h-[32px] px-2 py-1.5 flex items-center justify-center relative">
-                               <span className="font-medium text-gray-700 select-none text-center block w-full">
-                                   {formatETA(row.eta)}
-                               </span>
-                               {row.eta && (
-                                   <button 
-                                       onClick={(e) => { 
-                                           e.stopPropagation(); 
-                                           handleCellChange(idx, 'eta', ''); 
-                                       }}
-                                       className="absolute right-2 text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
-                                       title="Clear Date"
-                                   >
-                                       <X size={14} />
-                                   </button>
-                               )}
-                           </div>
-                       )}
-                    </td>
+                   {/* ETA Editable */}
+<td
+  className="p-0 border border-gray-300 relative group align-middle text-center whitespace-nowrap"
+>
+  {row.remark.toLowerCase().includes('shortage') ? (
+    editingEtaIdx === idx ? (
+      <div className="flex flex-col gap-1 p-1 bg-white min-w-[140px]">
+        
+        {/* Date Picker */}
+        <input
+          type="date"
+          autoFocus
+          value={
+            row.eta && row.eta !== 'TBA'
+              ? row.eta
+              : ''
+          }
+          onChange={(e) =>
+            handleCellChange(idx, 'eta', e.target.value)
+          }
+          className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-[#70ad47] outline-none"
+        />
+
+        {/* TBA Button */}
+        <button
+          type="button"
+          onClick={() =>
+            handleCellChange(idx, 'eta', 'TBA')
+          }
+          className={`px-2 py-1 text-xs rounded border transition-all ${
+            row.eta === 'TBA'
+              ? 'bg-amber-500 text-white border-amber-500'
+              : 'bg-gray-100 hover:bg-gray-200 border-gray-300'
+          }`}
+        >
+          TBA
+        </button>
+
+        {/* Done Button */}
+        <button
+          type="button"
+          onClick={() => setEditingEtaIdx(null)}
+          className="px-2 py-1 text-xs rounded bg-[#70ad47] text-white hover:bg-green-700"
+        >
+          Done
+        </button>
+      </div>
+    ) : (
+      <div
+        onClick={() => setEditingEtaIdx(idx)}
+        className="w-full h-full min-h-[40px] px-2 py-1.5 flex items-center justify-center relative cursor-pointer hover:bg-green-50"
+      >
+        <span className="font-medium text-gray-700 select-none text-center block w-full">
+          {formatETA(row.eta, row.remark)}
+        </span>
+
+        {row.eta && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              handleCellChange(idx, 'eta', '');
+            }}
+            className="absolute right-2 text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+            title="Clear ETA"
+          >
+            <X size={14} />
+          </button>
+        )}
+      </div>
+    )
+  ) : (
+    <div className="w-full h-full min-h-[40px] flex items-center justify-center text-gray-400 text-sm">
+      -
+    </div>
+  )}
+</td>
                     
                     {/* Visibility Action */}
                     <td className="p-0 border border-gray-300 align-middle text-center">

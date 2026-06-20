@@ -1,7 +1,10 @@
 import { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { motion, AnimatePresence, useAnimation } from 'framer-motion';
-import { BarChart3, TrendingUp, Calendar, Bell, Settings, Sun, Target, FileSpreadsheet } from 'lucide-react'; 
+import { 
+  BarChart3, TrendingUp, Calendar, Bell, Settings, Sun, Target, FileSpreadsheet, 
+  LayoutDashboard, ClipboardList, CalendarDays, PieChart, Activity, Clock
+} from 'lucide-react'; 
 import { ThemeProvider } from './theme-context';
 import ThemeSettings from './components/ThemeSettings';
 import confetti from 'canvas-confetti';
@@ -14,6 +17,7 @@ import SummaryChartSheet from './components/SummaryChartSheet';
 import PlanVsActualSheet from './components/PlanVsActualSheet'; 
 import ProductionRecordsTable from'./components/ProductionRecordsTable';
 import ViewUtlizationReport from'./components/ViewUtlizationReport';
+import CycleTimeSheet from'./components/CycleTimeSheet';
 
 // import skLogo from './assets/sk.png'; // Uncomment if using
 
@@ -43,14 +47,14 @@ function Dashboard() {
 
   // Tabs Definition
   const tabs = [
-    { id: 'summary', label: 'Summary & Charts', icon: TrendingUp },
-    { id: 'records', label: 'Hourly Records', icon: BarChart3 },        
-    { id: 'calendar', label: 'Yield Calendar', icon: Calendar },
-
-    { id: 'utlization', label: 'Utilization Report', icon: FileSpreadsheet },
-    { id: 'planvsactual', label: 'Plan Vs Actual', icon: BarChart3 },
+    { id: 'summary', label: 'Summary & Charts', icon: LayoutDashboard },
+    { id: 'records', label: 'Hourly Records', icon: ClipboardList },
+    { id: 'calendar', label: 'Yield Calendar', icon: CalendarDays },
+    { id: 'cycletime', label: 'Cycle Time', icon: Clock },
+    { id: 'utlization', label: 'Utilization Report', icon: PieChart },
+    { id: 'planvsactual', label: 'Plan Vs Actual', icon: Activity },
   ];
-
+  
   const POP_SOUND_URL = 'https://codeskulptor-demos.commondatastorage.googleapis.com/pang/pop.mp3';
 
   const handleLogoInteraction = () => {
@@ -86,7 +90,8 @@ function Dashboard() {
           isScrolled ? 'py-2 bg-white/95 shadow-sm' : 'py-3 bg-white/95'
         }`}
       >
-        <div className="max-w-[1600px] mx-auto flex flex-col xl:flex-row xl:items-center justify-between gap-4">
+        {/* CHANGED: Switched to flex-row and added horizontal scroll behavior to keep it on one line */}
+        <div className="max-w-[1600px] mx-auto flex items-center justify-between gap-4 overflow-x-auto w-full [&::-webkit-scrollbar]:hidden [-ms-overflow-style:'none'] [scrollbar-width:'none']">
           
           {/* Left: Title & Logo */}
           <div className="flex items-center gap-4 shrink-0">
@@ -103,14 +108,20 @@ function Dashboard() {
               <h1 className="text-xl font-black tracking-tight text-slate-900 leading-none whitespace-nowrap">
                 Hourly <span className="text-blue-600">Production</span>
               </h1>
-                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">
-                  Daily Operations Center
-                </p>
+ <a 
+                href="https://jeyamsureshk.netlify.app" 
+                target="_blank" 
+                rel="noopener noreferrer"
+className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1"
+              >
+                SK Tech Daily Operations Center
+              </a>
+                
             </div>
           </div>
 
-          {/* Middle: Tab Navigation - MADE SMALLER */}
-          <div className="flex-1 flex xl:justify-center overflow-x-auto no-scrollbar pb-1 xl:pb-0">
+          {/* Middle: Tab Navigation */}
+          <div className="flex shrink-0 items-center">
             <div className="inline-flex bg-slate-200/50 p-1 rounded-xl border border-slate-200/60 relative">
               {tabs.map((tab) => {
                 const isActive = activeTab === tab.id;
@@ -118,12 +129,10 @@ function Dashboard() {
                   <button
                     key={tab.id}
                     onClick={() => setActiveTab(tab.id)}
-                    // Adjusted padding (px-3 py-1.5), text size (text-[11px] or text-xs), and rounded corner radius
                     className={`relative z-10 flex items-center gap-1.5 px-3 py-1.5 text-[11px] md:text-xs font-bold transition-colors duration-500 whitespace-nowrap ${
                       isActive ? 'text-white' : 'text-slate-500 hover:text-slate-700'
                     }`}
                   >
-                    {/* Made icon smaller (14px) */}
                     <tab.icon 
                       size={14} 
                       strokeWidth={isActive ? 2.5 : 2} 
@@ -133,7 +142,6 @@ function Dashboard() {
                     {isActive && (
                       <motion.div
                         layoutId="active-tab-pill"
-                        // Adjusted rounded corner to match smaller button size
                         className="absolute inset-0 bg-slate-900 rounded-[10px] shadow-sm"
                         transition={{ type: 'spring', bounce: .4, duration: 0.5 }}
                       />
@@ -145,7 +153,8 @@ function Dashboard() {
           </div>
 
           {/* Right: Actions & Settings */}
-          <div className="flex items-center justify-end gap-3 shrink-0 hidden md:flex">
+          {/* CHANGED: Removed 'hidden md:flex' so it displays on mobile, and added shrink-0 */}
+          <div className="flex items-center gap-3 shrink-0">
             <div className="flex items-center gap-3 bg-slate-100/50 border border-slate-200 px-3 py-1.5 rounded-lg">
               <Calendar className="w-4 h-4 text-slate-500" />
               <div className="flex flex-col">
@@ -185,7 +194,7 @@ function Dashboard() {
             {activeTab === 'records' && <HourlyProductionSheet selectedDate={selectedDate} />}
             {activeTab === 'dayrecords' && <DayProductionSheet selectedDate={selectedDate} />}
             {activeTab === 'calendar' && <YieldCalendar />}
-
+            {activeTab === 'cycletime' && <CycleTimeSheet selectedDate={selectedDate} />}
             {activeTab === 'utlization' && <ViewUtlizationReport selectedDate={selectedDate} />}
             {activeTab === 'planvsactual' && <PlanVsActualSheet selectedDate={selectedDate} />}
           </motion.div>

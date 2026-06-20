@@ -19,7 +19,7 @@ import { AdapterDateFns } from '@mui/x-date-pickers/AdapterDateFns';
 import { TimePicker } from '@mui/x-date-pickers/TimePicker';
 
 // Initialize Gemini
-const genAI = new GoogleGenerativeAI("AIzaSyA-k1vvlPPCpc_Ma_9SNZRV69iTRD9gIhE");
+const genAI = new GoogleGenerativeAI("");
 
 // Helper to get local date string (YYYY-MM-DD)
 const getLocalDateStr = () => {
