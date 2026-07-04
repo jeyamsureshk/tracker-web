@@ -464,7 +464,7 @@ export default function CycleTimeDashboard() {
                             {[1, 2, 3, 4, 5].map((num) => (
                               <th key={num} className="px-3 py-4 text-center">C{num}</th>
                             ))}
-                            <th className="px-4 py-4 text-right text-slate-700 bg-slate-100/50">Mean (x̄)</th>
+                            <th className="px-4 py-4 text-right text-slate-700 bg-slate-100/50">Avg (sec)</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
