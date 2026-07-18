@@ -1,0 +1,113 @@
+sudo apt update
+sudo apt install dpkg-dev fakeroot
+pip install pyinstaller
+
+sudo apt install python3-full
+python3 -m venv .venv
+source .venv/bin/activate
+pip install PyQt6
+sudo apt install libxcb-cursor0
+
+
+Step 2: Compile Your App
+
+pyinstaller --onefile --windowed --name pro-code-editor editor_pro.py
+
+
+Step 3: Create the .deb Folder Structure
+
+# Create the main folder (Name_Version_Architecture)
+mkdir -p pro-code-editor_1.0_amd64
+
+# Create the internal Linux file structure
+mkdir -p pro-code-editor_1.0_amd64/DEBIAN
+mkdir -p pro-code-editor_1.0_amd64/usr/bin
+mkdir -p pro-code-editor_1.0_amd64/usr/share/applications
+
+
+Step 4: Move the Executable into Place
+
+cp dist/pro-code-editor pro-code-editor_1.0_amd64/usr/bin/
+
+
+Step 5: Create the control File
+
+nano pro-code-editor_1.0_amd64/DEBIAN/control
+
+
+Paste the following text into the file:
+Package: pro-code-editor
+Version: 1.0
+Section: devel
+Priority: optional
+Architecture: amd64
+Depends: libxcb-cursor0
+Maintainer: Your Name <jeyamsuresh1@gmail.com>
+Description: A modern React Native code editor built with Python and Qt.
+(Press Ctrl+O, then Enter to save. Press Ctrl+X to exit nano).
+
+
+Step 6: Create the Desktop Shortcut
+nano pro-code-editor_1.0_amd64/usr/share/applications/pro-code-editor.desktop
+Paste this configuration:
+[Desktop Entry]
+Name=Pro Code Editor
+Comment=React Native Code Editor
+Exec=/usr/bin/pro-code-editor %F
+Icon=text-editor
+Terminal=false
+Type=Application
+Categories=Development;IDE;
+MimeType=text/plain;text/javascript;application/javascript;text/x-typescript;application/typescript;text/css;text/html;text/xml;application/xml;
+(Press Ctrl+O, then Enter to save. Press Ctrl+X to exit nano).
+
+
+Step 7: Build the .deb Package
+
+dpkg-deb --build pro-code-editor_1.0_amd64
+
+You will now see a file named pro-code-editor_1.0_amd64.deb in your folder!
+
+
+Step 8: Install Your New App
+sudo apt install ./pro-code-editor_1.0_amd64.deb
+
+
+
+
+
+sudo apt update
+sudo apt install dpkg-dev fakeroot
+pip install pyinstaller
+sudo apt install python3-full
+python3 -m venv .venv
+source .venv/bin/activate
+pip install PyQt6
+sudo apt install libxcb-cursor0
+pyinstaller --onefile --windowed --name pro-code-editor editor_pro.py
+mkdir -p pro-code-editor_1.0_amd64
+mkdir -p pro-code-editor_1.0_amd64/DEBIAN
+mkdir -p pro-code-editor_1.0_amd64/usr/bin
+mkdir -p pro-code-editor_1.0_amd64/usr/share/applications
+cp dist/pro-code-editor pro-code-editor_1.0_amd64/usr/bin/
+nano pro-code-editor_1.0_amd64/DEBIAN/control
+Package: pro-code-editor
+Version: 1.0
+Section: devel
+Priority: optional
+Architecture: amd64
+Depends: libxcb-cursor0
+Maintainer: Your Name <jeyamsuresh1@gmail.com>
+Description: A modern React Native code editor built with Python and Qt.
+nano pro-code-editor_1.0_amd64/usr/share/applications/pro-code-editor.desktop
+[Desktop Entry]
+Name=Pro Code Editor
+Comment=React Native Code Editor
+Exec=/usr/bin/pro-code-editor %F
+Icon=text-editor
+Terminal=false
+Type=Application
+Categories=Development;IDE;
+MimeType=text/plain;text/javascript;application/javascript;text/x-typescript;application/typescript;text/css;text/html;text/xml;application/xml;
+dpkg-deb --build pro-code-editor_1.0_amd64
+sudo apt install ./pro-code-editor_1.0_amd64.deb
