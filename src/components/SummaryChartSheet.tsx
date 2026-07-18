@@ -81,21 +81,40 @@ export default function SummaryChartSheet({ selectedDate }: SummaryChartSheetPro
     }
 
     const teams = [...new Set(filteredProductions.map(p => p.team))];
-    const teamData: { [key: string]: { produced: number; target: number } } = {};
+    
+    // Include plan_dt, unplan_dt, and track unique dates for accurate 570m shift calculations
+    const teamData: { [key: string]: { produced: number; target: number; plan_dt: number; unplan_dt: number; uniqueDays: Set<string> } } = {};
     teams.forEach(team => {
-      teamData[team] = { produced: 0, target: 0 };
+      teamData[team] = { produced: 0, target: 0, plan_dt: 0, unplan_dt: 0, uniqueDays: new Set() };
     });
+
     filteredProductions.forEach(p => {
       if (teamData[p.team]) {
         teamData[p.team].produced += p.units_produced;
         teamData[p.team].target += p.target_units;
+        teamData[p.team].plan_dt += Number(p.plan_dt) || 0;
+        teamData[p.team].unplan_dt += Number(p.unplan_dt) || 0;
+        teamData[p.team].uniqueDays.add(p.date);
       }
     });
 
     return teams.map(team => {
       const data = teamData[team];
       const efficiency = data.target === 0 ? 0 : parseFloat(((data.produced / data.target) * 100).toFixed(1));
-      return { name: team, produced: data.produced, target: data.target, efficiency: efficiency };
+      
+      // Available Time: 570 mins per working day minus total downtime
+      const totalShiftMinutes = 570 * (data.uniqueDays.size || 1);
+      const availableTime = totalShiftMinutes - (data.plan_dt + data.unplan_dt);
+
+      return { 
+        name: team, 
+        produced: data.produced, 
+        target: data.target, 
+        efficiency: efficiency,
+        planDt: data.plan_dt,
+        unplanDt: data.unplan_dt,
+        availableTime: availableTime
+      };
     });
   };
 
@@ -292,60 +311,60 @@ export default function SummaryChartSheet({ selectedDate }: SummaryChartSheetPro
         </div>
 
         <div className="h-96">
-  <ResponsiveContainer width="100%" height="100%">
-    <LineChart data={chartData}>
-      <CartesianGrid strokeDasharray="3 3" />
-      <XAxis dataKey="name" />
-      
-      {/* Primary Y-Axis (Left) for Production/Target */}
-      <YAxis 
-        yAxisId="left" 
-        orientation="left" 
-        stroke="#3b82f6" 
-        label={{ value: 'Units', angle: -90, position: 'insideLeft' }}
-      />
-      
-      {/* Secondary Y-Axis (Right) for Manpower */}
-      <YAxis 
-        yAxisId="right" 
-        orientation="right" 
-        stroke="#f59e0b" 
-        domain={[0, 'dataMax']} // Set maximum data as chart top plus a small buffer
-        label={{ value: 'Manpower', angle: 90, position: 'insideRight' }}
-      />
-      
-      <Tooltip />
-      
-      <Line 
-        yAxisId="left" 
-        type="monotone" 
-        dataKey="produced" 
-        stroke="#3b82f6" 
-        strokeWidth={2} 
-        name="Units Produced" 
-        label={{ value: 'Produced', angle: 0, position: 'insideTop', offset:15, fill:'#3b82f6', fontSize:15 }}
-      />
-      <Line 
-  yAxisId="left" 
-  type="monotone" 
-  dataKey="target" 
-  stroke="#10b981" 
-  strokeWidth={2} 
-  name="Target Units" 
-  label={{ value: 'Target', angle: 0, position: 'insideBottom', offset:15, fill:'#10b981', fontSize:15 }}
-/>
-      <Line 
-        yAxisId="right" 
-        type="monotone" 
-        dataKey="manpower" 
-        stroke="#f59e0b" 
-        strokeWidth={2} 
-        name="Manpower" 
-    label={{ value: 'Manpower', angle: 0, position: 'insideTopRight', offset:7, fill:'#f59e0b', fontSize:15 }}
-      />
-    </LineChart>
-  </ResponsiveContainer>
-</div>
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="name" />
+              
+              {/* Primary Y-Axis (Left) for Production/Target */}
+              <YAxis 
+                yAxisId="left" 
+                orientation="left" 
+                stroke="#3b82f6" 
+                label={{ value: 'Units', angle: -90, position: 'insideLeft' }}
+              />
+              
+              {/* Secondary Y-Axis (Right) for Manpower */}
+              <YAxis 
+                yAxisId="right" 
+                orientation="right" 
+                stroke="#f59e0b" 
+                domain={[0, 'dataMax']} // Set maximum data as chart top plus a small buffer
+                label={{ value: 'Manpower', angle: 90, position: 'insideRight' }}
+              />
+              
+              <Tooltip />
+              
+              <Line 
+                yAxisId="left" 
+                type="monotone" 
+                dataKey="produced" 
+                stroke="#3b82f6" 
+                strokeWidth={2} 
+                name="Units Produced" 
+                label={{ value: 'Produced', angle: 0, position: 'insideTop', offset:15, fill:'#3b82f6', fontSize:15 }}
+              />
+              <Line 
+                yAxisId="left" 
+                type="monotone" 
+                dataKey="target" 
+                stroke="#10b981" 
+                strokeWidth={2} 
+                name="Target Units" 
+                label={{ value: 'Target', angle: 0, position: 'insideBottom', offset:15, fill:'#10b981', fontSize:15 }}
+              />
+              <Line 
+                yAxisId="right" 
+                type="monotone" 
+                dataKey="manpower" 
+                stroke="#f59e0b" 
+                strokeWidth={2} 
+                name="Manpower" 
+                label={{ value: 'Manpower', angle: 0, position: 'insideTopRight', offset:7, fill:'#f59e0b', fontSize:15 }}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
 
         {/* Model-wise Quantity Section */}
         <div className="mt-6">
@@ -389,8 +408,26 @@ export default function SummaryChartSheet({ selectedDate }: SummaryChartSheetPro
             {getTeamWiseSummary().map((team: any) => (
               <div key={team.name} className={`bg-gray-50 rounded p-4 cursor-pointer transition-colors ${selectedTeam === team.name ? 'ring-2 ring-blue-500 bg-blue-50' : 'hover:bg-gray-100'}`} onClick={() => setSelectedTeam(selectedTeam === team.name ? null : team.name)}>
                 <div className="font-medium text-gray-800">{team.name}</div>
-                <div className="text-sm text-gray-600 mt-1">Produced: {team.produced} | Target: {team.target}</div>
-                <div className="text-sm font-medium mt-1" style={{ color: team.efficiency >= 100 ? '#10b981' : team.efficiency >= 80 ? '#f59e0b' : '#ef4444' }}>Efficiency: {team.efficiency}%</div>
+                <div className="text-sm text-gray-600 mt-1 pb-1 border-b border-gray-200">
+                  Produced: {team.produced} | Target: {team.target}
+                </div>
+                
+                {/* Displaying Plan DT, Unplan DT, and Available Time */}
+                <div className="text-xs text-gray-500 mt-2 space-y-0.5">
+                  <div className="flex justify-between">
+                    <span>Plan DT:</span> <span>{team.planDt}m</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Unplan DT:</span> <span>{team.unplanDt}m</span>
+                  </div>
+                  <div className="flex justify-between font-medium text-slate-700">
+                    <span>Available Time:</span> <span>{team.availableTime}m</span>
+                  </div>
+                </div>
+
+                <div className="text-sm font-bold mt-2 pt-1 border-t border-gray-200" style={{ color: team.efficiency >= 100 ? '#10b981' : team.efficiency >= 80 ? '#f59e0b' : '#ef4444' }}>
+                  Efficiency: {team.efficiency}%
+                </div>
               </div>
             ))}
           </div>
@@ -414,57 +451,57 @@ export default function SummaryChartSheet({ selectedDate }: SummaryChartSheetPro
                   </div>
                 </div>
                 <div>
-  <h6 className="text-md font-medium mb-2">Production Chart</h6>
-  <div className="h-64">
-    <ResponsiveContainer width="100%" height="100%">
-      <LineChart data={getTeamChartData(selectedTeam)}>
-        <CartesianGrid strokeDasharray="3 3" />
-        <XAxis dataKey="name" />
-        
-        {/* Left Axis */}
-        <YAxis yAxisId="left" orientation="left" stroke="#3b82f6" />
-        
-        {/* Right Axis with Max Scale */}
-        <YAxis 
-          yAxisId="right" 
-          orientation="right" 
-          stroke="#f59e0b" 
-          domain={[0, 'dataMax']} 
-        />
-        
-        <Tooltip />
-        
-        <Line 
-          yAxisId="left" 
-          type="monotone" 
-          dataKey="produced" 
-          stroke="#3b82f6" 
-          strokeWidth={2} 
-          name="Units Produced" 
-        label={{ value: 'Produced', angle: 0, position: 'insideTop', offset:15, fill:'#3b82f6', fontSize:15 }}
-        />
-        <Line 
-          yAxisId="left" 
-          type="monotone" 
-          dataKey="target" 
-          stroke="#10b981" 
-          strokeWidth={2} 
-          name="Target Units" 
-  label={{ value: 'Target', angle: 0, position: 'insideBottom', offset:15, fill:'#10b981', fontSize:15 }}
-        />
-        <Line 
-          yAxisId="right" 
-          type="monotone" 
-          dataKey="manpower" 
-          stroke="#f59e0b" 
-          strokeWidth={2} 
-          name="Manpower" 
-    label={{ value: 'Manpower', angle: 0, position: 'insideTopRight', offset:7, fill:'#f59e0b', fontSize:15 }}
-        />
-      </LineChart>
-    </ResponsiveContainer>
-  </div>
-</div>
+                  <h6 className="text-md font-medium mb-2">Production Chart</h6>
+                  <div className="h-64">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={getTeamChartData(selectedTeam)}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="name" />
+                        
+                        {/* Left Axis */}
+                        <YAxis yAxisId="left" orientation="left" stroke="#3b82f6" />
+                        
+                        {/* Right Axis with Max Scale */}
+                        <YAxis 
+                          yAxisId="right" 
+                          orientation="right" 
+                          stroke="#f59e0b" 
+                          domain={[0, 'dataMax']} 
+                        />
+                        
+                        <Tooltip />
+                        
+                        <Line 
+                          yAxisId="left" 
+                          type="monotone" 
+                          dataKey="produced" 
+                          stroke="#3b82f6" 
+                          strokeWidth={2} 
+                          name="Units Produced" 
+                          label={{ value: 'Produced', angle: 0, position: 'insideTop', offset:15, fill:'#3b82f6', fontSize:15 }}
+                        />
+                        <Line 
+                          yAxisId="left" 
+                          type="monotone" 
+                          dataKey="target" 
+                          stroke="#10b981" 
+                          strokeWidth={2} 
+                          name="Target Units" 
+                          label={{ value: 'Target', angle: 0, position: 'insideBottom', offset:15, fill:'#10b981', fontSize:15 }}
+                        />
+                        <Line 
+                          yAxisId="right" 
+                          type="monotone" 
+                          dataKey="manpower" 
+                          stroke="#f59e0b" 
+                          strokeWidth={2} 
+                          name="Manpower" 
+                          label={{ value: 'Manpower', angle: 0, position: 'insideTopRight', offset:7, fill:'#f59e0b', fontSize:15 }}
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
               </div>
             </div>
           )}

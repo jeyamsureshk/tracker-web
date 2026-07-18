@@ -18,6 +18,7 @@ import PlanVsActualSheet from './components/PlanVsActualSheet';
 import ProductionRecordsTable from'./components/ProductionRecordsTable';
 import ViewUtlizationReport from'./components/ViewUtlizationReport';
 import CycleTimeSheet from'./components/CycleTimeSheet';
+import HourlySheet from'./components/HourlySheet';
 
 // import skLogo from './assets/sk.png'; // Uncomment if using
 
@@ -52,6 +53,7 @@ function Dashboard() {
     { id: 'calendar', label: 'Yield Calendar', icon: CalendarDays },
     { id: 'cycletime', label: 'Cycle Time', icon: Clock },
     { id: 'utlization', label: 'Utilization Report', icon: PieChart },
+    { id: 'hourly', label: 'Hourly sheet', icon: PieChart },
     { id: 'planvsactual', label: 'Plan Vs Actual', icon: Activity },
   ];
   
@@ -196,6 +198,7 @@ className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1"
             {activeTab === 'calendar' && <YieldCalendar />}
             {activeTab === 'cycletime' && <CycleTimeSheet selectedDate={selectedDate} />}
             {activeTab === 'utlization' && <ViewUtlizationReport selectedDate={selectedDate} />}
+            {activeTab === 'hourly' && <HourlySheet selectedDate={selectedDate} />}
             {activeTab === 'planvsactual' && <PlanVsActualSheet selectedDate={selectedDate} />}
           </motion.div>
         </AnimatePresence>

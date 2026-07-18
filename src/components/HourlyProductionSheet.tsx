@@ -231,35 +231,90 @@ export default function HourlyProductionSheet({ selectedDate }: HourlyProduction
     if (!error) setOperators(data || []);
   };
 
-  const fetchProductions = useCallback(async (showLoading = false) => {
-    if (showLoading) setLoading(true);
-    let query = supabase.from('production_records').select('*').order('date', { ascending: false }).order('hour', { ascending: false });
+const fetchProductions = useCallback(async (showLoading = false) => {
+if (showLoading) setLoading(true);
 
-    if (teamFilter) query = query.ilike('team', `%${teamFilter}%`);
-    if (fromDate) query = query.gte('date', fromDate);
-    if (toDate) query = query.lte('date', toDate);
-    if (hourMin) query = query.gte('hour', parseFloat(hourMin));
-    if (hourMax) query = query.lte('hour', parseFloat(hourMax));
-    if (efficiencyMin) query = query.gte('efficiency', parseFloat(efficiencyMin));
-    if (efficiencyMax) query = query.lte('efficiency', parseFloat(efficiencyMax));
+try {
+const batchSize = 1000;
+let from = 0;
+let allData: ProductionRecord[] = [];
+let hasMoreData = true;
 
-    const { data, error } = await query;
-    if (!error) {
-      let filteredData = data || [];
-      if (modelFilter) {
-        const normalizedFilter = modelFilter.toLowerCase().replace(/\s+/g, '');
-        filteredData = filteredData.filter(record =>
-          record.item && record.item.some((item: any) =>
-            item.model && item.model.toLowerCase().replace(/\s+/g, '').includes(normalizedFilter)
-          )
-        );
-      }
-      setProductions(filteredData);
-      const uniqueTeams = [...new Set((data || []).map(record => record.team).filter(Boolean))].sort();
-      setAvailableTeams(uniqueTeams);
-    }
-    if (showLoading) setLoading(false);
-  }, [teamFilter, modelFilter, fromDate, toDate, hourMin, hourMax, efficiencyMin, efficiencyMax]);
+while (hasMoreData) {
+  let query = supabase
+    .from('production_records')
+    .select('*')
+    .order('date', { ascending: false })
+    .order('hour', { ascending: false })
+    .range(from, from + batchSize - 1);
+
+  if (teamFilter) query = query.ilike('team', `%${teamFilter}%`);
+  if (fromDate) query = query.gte('date', fromDate);
+  if (toDate) query = query.lte('date', toDate);
+  if (hourMin) query = query.gte('hour', parseFloat(hourMin));
+  if (hourMax) query = query.lte('hour', parseFloat(hourMax));
+  if (efficiencyMin) query = query.gte('efficiency', parseFloat(efficiencyMin));
+  if (efficiencyMax) query = query.lte('efficiency', parseFloat(efficiencyMax));
+
+  const { data, error } = await query;
+
+  if (error) {
+    console.error('Failed to fetch production records:', error);
+    break;
+  }
+
+  const batchData = (data || []) as ProductionRecord[];
+
+  allData = [...allData, ...batchData];
+
+  // If Supabase returns fewer than 1000 rows, all rows have been loaded.
+  if (batchData.length < batchSize) {
+    hasMoreData = false;
+  } else {
+    from += batchSize;
+  }
+}
+
+let filteredData = allData;
+
+// Keep your existing model filter logic exactly the same
+if (modelFilter) {
+  const normalizedFilter = modelFilter.toLowerCase().replace(/\s+/g, '');
+
+  filteredData = filteredData.filter(record =>
+    record.item &&
+    record.item.some((item: any) =>
+      item.model &&
+      item.model.toLowerCase().replace(/\s+/g, '').includes(normalizedFilter)
+    )
+  );
+}
+
+setProductions(filteredData);
+
+const uniqueTeams = [
+  ...new Set(allData.map(record => record.team).filter(Boolean))
+].sort();
+
+setAvailableTeams(uniqueTeams);
+
+
+} catch (error) {
+console.error('Unexpected error while loading production records:', error);
+} finally {
+if (showLoading) setLoading(false);
+}
+}, [
+teamFilter,
+modelFilter,
+fromDate,
+toDate,
+hourMin,
+hourMax,
+efficiencyMin,
+efficiencyMax
+]);
+
 
   useEffect(() => {
     fetchProductions(true);
